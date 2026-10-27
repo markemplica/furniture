@@ -12,7 +12,7 @@ FurniCraft is a Laravel web application for Lance Furniture Shop. It gives authe
 - The customer-facing room upload is photo-first and does not ask for room dimensions. Gemini may estimate width and depth; local planning guidance is used when AI is not authorized or unavailable. Legacy optional dimensions remain supported by the backend.
 - Gemini room analysis and furnished-room image generation run in the database queue; the preview page polls for completion and continues to show the local 2D overlay while image generation runs
 - Reservation requests only; no payment, delivery tracking, inventory, or financial management
-- Queued email verification and reservation-confirmation notifications; password-reset codes are sent synchronously and logged
+- Queued email verification, password-reset, reservation-confirmation, and beta feedback email
 - Password-reset codes stored as hashes, valid for 15 minutes, single-use, and request-rate-limited
 - Responsive Bootstrap interface for phone and desktop browsers
 
@@ -27,7 +27,7 @@ FurniCraft is a Laravel web application for Lance Furniture Shop. It gives authe
 
 ## Set up a local clone
 
-Clone the repository and run the following commands from its root. Copy the example environment file, install dependencies, and generate an application key:
+Clone the repository and run the following commands from its root. Copy the example environment file, install dependencies, and generate an application key. The committed template is production-oriented, so switch your local copy to local mode before starting development:
 
 ```powershell
 Copy-Item .env.example .env
@@ -35,7 +35,9 @@ composer install
 php artisan key:generate
 ```
 
-Create a local MySQL/MariaDB database using `utf8mb4`, then set `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD` in `.env`. `.env.example` contains local defaults; use a dedicated database account outside a disposable local environment.
+Set `APP_ENV=local`, `APP_DEBUG=true`, and `APP_URL=http://127.0.0.1:8000` in your local `.env`. Keep `.env` private and never commit it.
+
+Create a local MySQL/MariaDB database using `utf8mb4`, then set `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD` in `.env`. Use a dedicated database account outside a disposable local environment.
 
 ```env
 DB_CONNECTION=mysql
@@ -64,7 +66,7 @@ php artisan queue:work --tries=3 --timeout=540
 php artisan schedule:work
 ```
 
-The development server is available at `http://127.0.0.1:8000`. The seeder creates catalog data but does not create demo accounts.
+The development server is available at `http://127.0.0.1:8000`. `DatabaseSeeder` seeds demo furniture only and refuses to run in production. It does not create demo accounts. For an explicitly configured beta deployment, set `BETA_SEED_ACCOUNTS=true` and populate `BETA_ADMIN_NAME`, `BETA_ADMIN_EMAIL`, `BETA_ADMIN_PASSWORD`, `BETA_CUSTOMER_NAME`, `BETA_CUSTOMER_EMAIL`, and `BETA_CUSTOMER_PASSWORD` through the host's secret manager, then run `php artisan db:seed --class=BetaTestAccountsSeeder --force`. The seeder does not print passwords or replace an existing account. Only Customer and Administrator roles exist; staff accounts are not supported by authorization or workflow code.
 ## Production deployment and recovery
 
 FurniCraft is currently a locally run prototype. No hosting target, public HTTPS URL, real mail provider, backup destination, restore drill, or supervised production services have been verified. Do not describe the system as production deployed until these steps are completed on the target host.
@@ -98,7 +100,7 @@ FurniCraft is currently a locally run prototype. No hosting target, public HTTPS
 3. For a restore drill, use an isolated MySQL database and a non-public staging copy. Restore the SQL dump, restore `storage/app/private` to the corresponding application storage directory, apply any newer migrations, then verify login, catalog, reservation history, private room-image access, queue processing, and email delivery. Never test restore by overwriting the live database.
 4. Record the drill date, operator, duration, and any data loss or errors. A backup is not considered verified until a restore has succeeded. Set the schedule, retention count, recovery-time objective, and recovery-point objective with the hosting operator before launch.
 
-The built-in `/up` endpoint is a basic application health check. The admin Deployment readiness page and `system:readiness` command check configuration and database connectivity; production still needs host-level uptime monitoring, log/exception monitoring, supervised workers, and tested backup alerts.
+The built-in `/up` endpoint is a basic application health check. `/health` checks database, cache, and queue connectivity without returning configuration secrets. The admin Deployment readiness page and `system:readiness` command check configuration; production still needs host-level uptime monitoring, exception monitoring, supervised workers, and tested backup alerts.
 
 ## Gemini configuration
 
@@ -116,7 +118,7 @@ The model name is configurable so it can be changed without modifying applicatio
 
 ## Email configuration
 
-Email verification and reservation-confirmation notifications use Laravel's queue. Password-reset email is sent synchronously by its controller. For local inspection, the default `log` mailer writes messages to `storage/logs/laravel.log`. Configure a real mail provider for deployment:
+Email verification, reservation-confirmation notifications, and beta feedback email use Laravel's queue. Password-reset email is sent synchronously by its controller. Configure a real mail provider and `ADMIN_FEEDBACK_EMAIL` for deployment:
 
 ```env
 MAIL_MAILER=smtp
@@ -127,6 +129,7 @@ MAIL_PASSWORD=your-password
 MAIL_SCHEME=tls
 MAIL_FROM_ADDRESS=noreply@example.com
 MAIL_FROM_NAME="FurniCraft"
+ADMIN_FEEDBACK_EMAIL=admin@example.com
 QUEUE_CONNECTION=database
 ```
 
@@ -151,6 +154,15 @@ The feature suite verifies public and protected access, required preferences and
 - Room-photo AI processing requires an explicit per-upload opt-in; unconsented images use local guidance only. New photos and generated previews are privately stored, metadata-stripped, and scheduled for removal after `ROOM_IMAGE_RETENTION_DAYS` (default 30).
 - The retention task is scheduled in Laravel. Run `php artisan schedule:work` locally, or configure the standard Laravel scheduler cron entry in production; also run `php artisan room-images:secure-legacy` once after upgrading older installations.
 - The privacy notice describes the application’s controls and external Gemini transfer. It is not a certification or legal compliance determination.
+
+## Known beta limitations
+
+- A single room photo only supports approximate scale and placement; confirm physical measurements with the shop before reserving.
+- Gemini is optional. Without `GEMINI_API_KEY`, room analysis and chat use local guidance; provider outages also fall back locally.
+- Reservations are inquiries only. The system has no payment, inventory, delivery, or order-fulfillment workflow.
+- Only Customer and Administrator roles exist. Staff-specific permissions and account workflows are not implemented.
+- A live queue worker and scheduler, real email delivery, HTTPS, backups, and restore drills must be verified on the target host; repository checks cannot prove those external services.
+- Feedback remains saved when its email cannot be queued; the submitter sees a warning.
 
 
 
