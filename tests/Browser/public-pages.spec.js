@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
     }));
 });
 
-for (const path of ['/', '/login', '/feedback']) {
+for (const path of ['/', '/login', '/feedback', '/privacy-policy']) {
     test(`${path} loads without horizontal overflow or unnamed controls`, async ({ page }) => {
         const errors = [];
         page.on('pageerror', (error) => errors.push(error.message));
@@ -21,6 +21,7 @@ for (const path of ['/', '/login', '/feedback']) {
         expect(response?.ok()).toBeTruthy();
         await expect(page.locator('main')).toHaveCount(1);
         await expect(page.locator('h1')).toHaveCount(1);
+        await expect(page.locator('.beta-notice')).toHaveCount(0);
 
         const audit = await page.evaluate(() => ({
             documentWidth: document.documentElement.scrollWidth,
