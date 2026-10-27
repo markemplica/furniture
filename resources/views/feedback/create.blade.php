@@ -4,7 +4,7 @@
 
 @section('content')
 <header class="page-heading">
-    <div><p class="section-kicker">Closed beta</p><h1>Send feedback or report a bug</h1><p>Tell us what happened and what you expected. Please do not include passwords or private account details.</p></div>
+    <div><p class="section-kicker">Support</p><h1>Send feedback or report a bug</h1><p>Tell us what happened and what you expected. Please do not include passwords or private account details.</p></div>
 </header>
 <form class="panel form-panel" method="POST" action="{{ route('feedback.store') }}">
     @csrf

@@ -11,7 +11,6 @@
 </head>
 <body class="@guest guest-body @endguest @yield('body_class')">
 <a class="skip-link" href="#main-content">Skip to main content</a>
-<div class="beta-notice" role="note"><span class="beta-tag">BETA</span><span>FurniCraft is in a limited beta. Please confirm reservation details with Lance Furniture Shop.</span></div>
 @auth
 <nav class="navbar navbar-expand-lg navbar-light fc-navbar sticky-top" aria-label="Main navigation">
     <div class="container-xl">

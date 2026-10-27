@@ -27,7 +27,7 @@ class FeedbackReceived extends Mailable implements ShouldQueue
 
     public function failed(?Throwable $exception): void
     {
-        Log::error('Queued beta feedback email failed after retrying', [
+        Log::error('Queued feedback email failed after retrying', [
             'feedback_report_id' => $this->report->id,
             'exception' => $exception ? $exception::class : null,
         ]);
@@ -35,7 +35,7 @@ class FeedbackReceived extends Mailable implements ShouldQueue
 
     public function build(): self
     {
-        return $this->subject('[FurniCraft beta] '.$this->report->subject)
+        return $this->subject('[FurniCraft] '.$this->report->subject)
             ->replyTo($this->report->email)
             ->view('emails.feedback-received');
     }
