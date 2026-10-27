@@ -2,14 +2,11 @@
 
 namespace Database\Seeders;
 
-use App\Models\Favorite;
 use App\Models\FurnitureProduct;
-use App\Models\FurnitureViewEvent;
-use App\Models\Reservation;
 use App\Models\User;
 use Illuminate\Database\Seeder;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class DatabaseSeeder extends Seeder
 {
@@ -18,17 +15,12 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // Reuse the owner even after their login email has been changed.
-        $admin = User::where('role', 'admin')->orderBy('id')->first();
-        if (! $admin) {
-            if (User::where('email', 'admin@furnicraft.local')->exists()) {
-                throw new \RuntimeException('The demo admin email belongs to another account. No account was promoted.');
-            }
-            $admin = User::create(['email' => 'admin@furnicraft.local', 'name' => 'Lance Furniture Owner', 'password' => Hash::make('password'), 'role' => 'admin', 'branch' => config('furnicraft.branch'), 'is_active' => true, 'email_verified_at' => now()]);
+        if (app()->environment('production')) {
+            throw new RuntimeException('DatabaseSeeder contains demo catalog data and cannot be run in production.');
         }
-        // Defaults apply only to new demo accounts; preserve existing security settings.
-        $demo = User::firstOrCreate(['email' => 'demo@furnicraft.local'], ['name' => 'Demo Customer', 'password' => Hash::make('password'), 'role' => 'customer', 'phone' => '0917 000 0000', 'is_active' => true, 'email_verified_at' => now()]);
-        $neighbor = User::firstOrCreate(['email' => 'neighbor@furnicraft.local'], ['name' => 'Sample Customer', 'password' => Hash::make('password'), 'role' => 'customer', 'is_active' => true, 'email_verified_at' => now()]);
+
+        // Attribute seeded catalog records to an existing administrator when available.
+        $admin = User::where('role', 'admin')->orderBy('id')->first();
 
         $products = [
             ['Heritage Dining Set', 'Dining Set', 'A six-seat solid wood dining set designed for everyday family meals and gatherings.', 'Mahogany', 'Natural', 'Traditional', 48900, 180, 95, 76, 'dining.svg', ['dining', 'family', 'six seat']],
@@ -60,27 +52,9 @@ class DatabaseSeeder extends Seeder
         foreach ($products as $row) {
             [$name, $category, $description, $wood, $finish, $style, $price, $width, $depth, $height, $image, $tags] = $row;
             $imagePath = str_starts_with($image, 'catalog:') ? $image : 'demo:'.$image;
-            FurnitureProduct::updateOrCreate(['slug' => Str::slug($name)], ['name' => $name, 'category' => $category, 'description' => $description, 'wood_type' => $wood, 'varnish_finish' => $finish, 'style' => $style, 'price' => $price, 'width_cm' => $width, 'depth_cm' => $depth, 'height_cm' => $height, 'image_path' => $imagePath, 'tags' => $tags, 'status' => 'active', 'created_by' => $admin->id]);
+            FurnitureProduct::updateOrCreate(['slug' => Str::slug($name)], ['name' => $name, 'category' => $category, 'description' => $description, 'wood_type' => $wood, 'varnish_finish' => $finish, 'style' => $style, 'price' => $price, 'width_cm' => $width, 'depth_cm' => $depth, 'height_cm' => $height, 'image_path' => $imagePath, 'tags' => $tags, 'status' => 'active', 'created_by' => $admin?->id]);
         }
 
         $this->call(CustomerCatalogProductsSeeder::class);
-
-        $all = FurnitureProduct::orderBy('id')->get();
-        foreach ($all->take(5) as $product) {
-            Favorite::firstOrCreate(['user_id' => $neighbor->id, 'furniture_product_id' => $product->id]);
-        }
-        foreach ($all->take(3) as $product) {
-            Favorite::firstOrCreate(['user_id' => $demo->id, 'furniture_product_id' => $product->id]);
-        }
-        if (FurnitureViewEvent::count() === 0) {
-            foreach ($all->take(6) as $index => $product) {
-                for ($i = 0; $i < 12 - $index; $i++) {
-                    FurnitureViewEvent::create(['user_id' => $i % 2 ? $demo->id : $neighbor->id, 'furniture_product_id' => $product->id, 'session_key' => 'seed']);
-                }
-            }
-        }
-        if (Reservation::count() === 0) {
-            Reservation::create(['reference' => 'FC-DEMO-001', 'user_id' => $neighbor->id, 'furniture_product_id' => $all->first()->id, 'branch' => config('furnicraft.branch'), 'status' => 'confirmed', 'confirmed_at' => now(), 'confirmed_by' => $admin->id]);
-        }
     }
 }

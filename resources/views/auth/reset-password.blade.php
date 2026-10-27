@@ -22,8 +22,8 @@
             <form id="reset-password-form" method="POST" action="{{ route('password.update') }}" class="vstack gap-3">
                 @csrf
                 <input type="hidden" name="email" value="{{ $email }}">
-                <div><label class="form-label" for="password">New password</label><input class="form-control" id="password" type="password" name="password" autocomplete="new-password" minlength="8" required autofocus></div>
-                <div><label class="form-label" for="password_confirmation">Confirm new password</label><input class="form-control" id="password_confirmation" type="password" name="password_confirmation" autocomplete="new-password" minlength="8" required></div>
+                <div><label class="form-label" for="password">New password</label><input class="form-control" id="password" type="password" name="password" autocomplete="new-password" minlength="10" required autofocus><div class="form-text">Use at least 10 characters with letters and numbers.</div></div>
+                <div><label class="form-label" for="password_confirmation">Confirm new password</label><input class="form-control" id="password_confirmation" type="password" name="password_confirmation" autocomplete="new-password" minlength="10" required></div>
                 <button class="btn btn-primary btn-lg" type="submit">Change password</button>
             </form>
         @else

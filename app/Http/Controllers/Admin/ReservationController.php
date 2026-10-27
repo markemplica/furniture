@@ -40,7 +40,14 @@ class ReservationController extends Controller
             }
             $previousStatus = $reservation->status;
             $wasConfirmed = $previousStatus === 'confirmed';
-            $updates = ['status' => $data['status'], 'confirmed_at' => $data['status'] === 'confirmed' ? ($reservation->confirmed_at ?: now()) : $reservation->confirmed_at, 'confirmed_by' => $data['status'] === 'confirmed' ? ($reservation->confirmed_by ?: $request->user()->id) : $reservation->confirmed_by, 'decline_reason' => $data['decline_reason'] ?? $reservation->decline_reason];
+            $isReapproved = $data['status'] === 'confirmed' && $previousStatus !== 'confirmed';
+            $updates = [
+                'status' => $data['status'],
+                'confirmed_at' => $data['status'] === 'confirmed' ? ($isReapproved ? now() : $reservation->confirmed_at) : $reservation->confirmed_at,
+                'confirmed_by' => $data['status'] === 'confirmed' ? ($isReapproved ? $request->user()->id : $reservation->confirmed_by) : $reservation->confirmed_by,
+                'decline_reason' => $data['status'] === 'declined' ? ($data['decline_reason'] ?? $reservation->decline_reason) : null,
+            ];
+            if ($data['status'] !== 'confirmed') $updates['item_ready_confirmed_at'] = null;
             if ($request->boolean('item_ready')) $updates['item_ready_confirmed_at'] = now();
             if (($data['outcome'] ?? null) === 'completed') $updates['completed_at'] = now();
             if (($data['outcome'] ?? null) === 'no_show') $updates['no_show_at'] = now();

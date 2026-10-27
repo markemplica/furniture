@@ -2,18 +2,28 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\LoginRequest;
+use App\Http\Requests\RegisterRequest;
+use App\Http\Requests\VerifyEmailRequest;
 use App\Models\NotificationLog;
 use App\Models\RegistrationVerificationCode;
 use App\Models\User;
 use App\Notifications\EmailVerificationCodeNotification;
+use App\Support\SafeRedirectTarget;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rules\Password;
 
 class AuthController extends Controller
 {
+    private const LOGIN_MAX_FAILED_ATTEMPTS = 5;
+
+    private const LOGIN_DECAY_SECONDS = 60;
+
+    private const DUMMY_PASSWORD_HASH = '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2uheWG/igi.';
+
     public function showLogin(Request $request)
     {
         return view('auth.login', ['redirect' => $request->query('redirect')]);
@@ -40,48 +50,52 @@ class AuthController extends Controller
         ]);
     }
 
-    public function login(Request $request)
+    public function login(LoginRequest $request)
     {
-        $credentials = $request->validate(['email' => ['required', 'email'], 'password' => ['required', 'string']]);
-        if (! Auth::attempt($credentials, $request->boolean('remember'))) {
+        $credentials = $request->validated();
+        $email = Str::lower(trim($credentials['email']));
+        $limiterKey = 'login-failed:'.$email.'|'.$request->ip();
+
+        if (RateLimiter::tooManyAttempts($limiterKey, self::LOGIN_MAX_FAILED_ATTEMPTS)) {
             return back()->withErrors(['email' => 'The email address or password is incorrect.'])->onlyInput('email');
         }
 
-        $user = $request->user();
+        $user = User::where('email', $email)->first();
+        $passwordMatches = Hash::check($credentials['password'], $user?->password ?? self::DUMMY_PASSWORD_HASH);
+
+        if (! $user || ! $passwordMatches) {
+            RateLimiter::hit($limiterKey, self::LOGIN_DECAY_SECONDS);
+
+            return back()->withErrors(['email' => 'The email address or password is incorrect.'])->onlyInput('email');
+        }
+
+        RateLimiter::clear($limiterKey);
         if (! $user->email_verified_at) {
-            Auth::logout();
             $request->session()->put('registration_email', $user->email);
 
             return redirect()->route('verification.notice')->withErrors(['email' => 'Verify your email with the code we sent before signing in.']);
         }
         if (! $user->is_active) {
-            Auth::logout();
-
             return back()->withErrors(['email' => 'This account is inactive. Please contact Lance Furniture Shop.']);
         }
 
+        Auth::login($user, $request->boolean('remember'));
         $request->session()->regenerate();
         $redirect = (string) $request->input('redirect');
-        $sameHost = filled($redirect) && parse_url($redirect, PHP_URL_HOST) === $request->getHost();
-        $relativePath = str_starts_with($redirect, '/') && ! str_starts_with($redirect, '//');
         $fallback = $request->user()->isAdmin() ? route('admin.dashboard') : route('home');
-        $target = ($sameHost || $relativePath) ? $redirect : $fallback;
+        $target = $this->safeRedirectTarget($redirect, $request, $fallback);
 
         return redirect()->intended($target)->with('success', 'Welcome back, '.$request->user()->name.'.');
     }
 
-    public function register(Request $request)
+    private function safeRedirectTarget(string $redirect, Request $request, string $fallback): string
     {
-        $data = $request->validate([
-            'first_name' => ['required', 'string', 'max:50'],
-            'middle_name' => ['nullable', 'string', 'max:50'],
-            'last_name' => ['required', 'string', 'max:50'],
-            'birthdate' => ['required', 'date_format:Y-m-d', 'before:today'],
-            'gender' => ['required', 'in:male,female,non_binary,prefer_not_to_say'],
-            'email' => ['required', 'email', 'max:255', 'unique:users'],
-            'phone' => ['nullable', 'string', 'max:32'],
-            'password' => ['required', 'confirmed', Password::min(8)],
-        ]);
+        return SafeRedirectTarget::resolve($redirect, $request, $fallback);
+    }
+
+    public function register(RegisterRequest $request)
+    {
+        $data = $request->validated();
         $name = implode(' ', array_filter([
             trim($data['first_name']),
             trim($data['middle_name'] ?? ''),
@@ -106,12 +120,9 @@ class AuthController extends Controller
         return redirect()->route('verification.notice')->with('success', 'We sent a verification code to your email. Enter it to activate your account.');
     }
 
-    public function verifyEmail(Request $request)
+    public function verifyEmail(VerifyEmailRequest $request)
     {
-        $data = $request->validate([
-            'email' => ['required', 'email'],
-            'code' => ['required', 'digits:6'],
-        ]);
+        $data = $request->validated();
         $email = Str::lower(trim($data['email']));
         $user = User::where('email', $email)->whereNull('email_verified_at')->where('is_active', false)->first();
         $record = $user

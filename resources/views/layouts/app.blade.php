@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="theme-color" content="#4a2e21">
     <title>@yield('title', 'FurniCraft') | Lance Furniture Shop</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
     <link href="{{ asset('css/furnicraft.css') }}?v={{ filemtime(public_path('css/furnicraft.css')) }}" rel="stylesheet">
 </head>
 <body class="@guest guest-body @endguest @yield('body_class')">
@@ -95,7 +95,6 @@
 </footer>
 @endif
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
 <script src="{{ asset('js/furnicraft.js') }}?v={{ filemtime(public_path('js/furnicraft.js')) }}"></script>
 <script src="{{ asset('js/room-preview-engine.js') }}?v={{ filemtime(public_path('js/room-preview-engine.js')) }}"></script>
 @stack('scripts')

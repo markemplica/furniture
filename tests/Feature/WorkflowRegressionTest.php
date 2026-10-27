@@ -6,12 +6,14 @@ use App\Http\Controllers\Admin\ReservationController as AdminReservationControll
 use App\Jobs\AnalyzeRoomImage;
 use App\Jobs\GenerateRoomPreview;
 use App\Models\FurnitureProduct;
+use App\Models\NotificationLog;
 use App\Models\Recommendation;
 use App\Models\Reservation;
 use App\Models\ReservationTransaction;
 use App\Models\RoomImage;
 use App\Models\RoomPreviewGeneration;
 use App\Models\User;
+use App\Notifications\ReservationVisitReminderNotification;
 use App\Services\AiTelemetry;
 use App\Services\GeminiService;
 use App\Services\PrivacyAudit;
@@ -21,6 +23,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Queue;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -155,6 +158,44 @@ class WorkflowRegressionTest extends TestCase
         $this->assertSame(0, $reservation->transactions()->count());
     }
 
+    public function test_reservation_redecision_clears_stale_customer_status_details(): void
+    {
+        Notification::fake();
+        $customer = User::factory()->create();
+        $admin = User::factory()->create(['role' => 'admin']);
+        $previousApproval = now()->subDays(2);
+        $reservation = $this->reservation($customer, 'confirmed');
+        $reservation->update([
+            'confirmed_at' => $previousApproval,
+            'confirmed_by' => $admin->id,
+            'item_ready_confirmed_at' => $previousApproval,
+            'decline_reason' => 'Old decline reason',
+        ]);
+
+        $this->actingAs($admin)->patch(route('admin.reservations.update', $reservation), [
+            'status' => 'declined',
+            'decline_reason' => 'Current decline reason',
+        ])->assertRedirect();
+
+        $this->assertNull($reservation->fresh()->item_ready_confirmed_at);
+        $this->actingAs($customer)->get(route('reservations.index'))
+            ->assertSee('Current decline reason')
+            ->assertDontSee('Request approved');
+
+        $this->actingAs($admin)->patch(route('admin.reservations.update', $reservation), [
+            'status' => 'confirmed',
+        ])->assertRedirect();
+
+        $reservation->refresh();
+        $this->assertNull($reservation->decline_reason);
+        $this->assertNull($reservation->item_ready_confirmed_at);
+        $this->assertTrue($reservation->confirmed_at->greaterThan($previousApproval));
+        $this->assertSame($admin->id, $reservation->confirmed_by);
+        $this->actingAs($customer)->get(route('reservations.index'))
+            ->assertSee('Request approved')
+            ->assertDontSee('Current decline reason');
+    }
+
     public function test_status_change_rolls_back_when_history_cannot_be_written(): void
     {
         Notification::fake();
@@ -211,6 +252,59 @@ class WorkflowRegressionTest extends TestCase
             });
         $this->actingAs($customer)->post(route('recommendations.store'), ['room_image_id' => $room->id])->assertRedirect();
         $this->assertNull($preference->fresh()->room_depth_m);
+    }
+
+    public function test_room_reanalysis_without_consent_keeps_local_estimate_and_does_not_queue_ai(): void
+    {
+        Queue::fake();
+        $customer = User::factory()->create();
+        $room = $this->room($customer);
+        $room->update([
+            'gemini_consent_at' => null,
+            'gemini_consent_version' => null,
+            'analysis_status' => 'fallback',
+        ]);
+
+        $this->actingAs($customer)->post(route('room.reanalyze', $room))
+            ->assertRedirect()
+            ->assertSessionHas('warning', fn ($message) => str_contains($message, 'AI analysis is off for this photo'));
+
+        Queue::assertNotPushed(AnalyzeRoomImage::class);
+        $this->assertSame('fallback', $room->fresh()->analysis_status);
+    }
+
+    public function test_room_reanalysis_reports_the_actual_gemini_fallback_reason(): void
+    {
+        config(['queue.default' => 'sync', 'services.gemini.key' => null]);
+        $customer = User::factory()->create();
+        $room = $this->room($customer);
+        $room->update(['analysis_status' => 'fallback']);
+        $this->mock(RoomPhotoService::class)->shouldReceive('exists')->once()->andReturnTrue();
+
+        $this->actingAs($customer)->post(route('room.reanalyze', $room))
+            ->assertRedirect()
+            ->assertSessionHas('success', fn ($message) => str_contains($message, 'Gemini is not configured'));
+
+        $this->assertSame('fallback', $room->fresh()->analysis_status);
+    }
+
+    public function test_visit_reminder_logs_successful_synchronous_email_as_sent(): void
+    {
+        config(['queue.default' => 'database']);
+        Notification::fake();
+        $customer = User::factory()->create();
+        $reservation = $this->reservation($customer, 'confirmed');
+        $reservation->update(['preferred_visit_at' => now()->addHours(24)]);
+
+        $this->artisan('reservations:remind')
+            ->expectsOutput('Sent 1 visit reminders.')
+            ->assertSuccessful();
+
+        Notification::assertSentTo($customer, ReservationVisitReminderNotification::class, 1);
+        $log = NotificationLog::where('type', 'reservation_visit_reminder')->firstOrFail();
+        $this->assertSame('sent', $log->status);
+        $this->assertNotNull($log->sent_at);
+        $this->assertNotNull($reservation->fresh()->reminder_sent_at);
     }
 
     public function test_reanalysis_preserves_previews_committed_during_the_ai_request(): void

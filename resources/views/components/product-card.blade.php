@@ -6,5 +6,6 @@
         <h3 class="mt-2"><a class="text-reset text-decoration-none" href="{{ route('catalog.show', $product) }}">{{ $product->name }}</a></h3>
         <p class="product-meta"><span class="swatch {{ strtolower($product->wood_type) }}"></span>{{ $product->wood_type }} · {{ $product->varnish_finish }} · {{ $product->style }}</p>
         <p class="product-price">PHP {{ number_format($product->price, 2) }}</p>
+        <div class="product-card-actions"><a class="btn btn-outline-dark w-100" href="{{ route('catalog.show', $product) }}">View details</a></div>
     </div>
 </article>

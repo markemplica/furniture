@@ -2,7 +2,6 @@
 
 namespace App\Http\Middleware;
 
-use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -13,7 +12,7 @@ class EnsureAccountIsActive
     public function handle(Request $request, Closure $next): Response
     {
         $user = $request->user();
-        if ($user && ! User::whereKey($user->getAuthIdentifier())->where('is_active', true)->exists()) {
+        if ($user && ! $user->is_active) {
             Auth::guard('web')->logout();
             $request->session()->invalidate();
             $request->session()->regenerateToken();

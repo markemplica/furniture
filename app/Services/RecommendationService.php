@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\CustomerPreference;
 use App\Models\Favorite;
 use App\Models\FurnitureProduct;
+use App\Models\FurnitureViewEvent;
 use App\Models\Recommendation;
 use App\Models\Reservation;
 use App\Models\RoomImage;
@@ -18,25 +19,42 @@ class RecommendationService
 
     public function generate(User $user, CustomerPreference $preference, ?RoomImage $roomImage, string $furnitureType, ?Recommendation $existing = null): Recommendation
     {
-        $products = FurnitureProduct::query()->where('status', 'active')->get()
-            ->filter(fn (FurnitureProduct $product) => $product->recommendationType() === $furnitureType)
-            ->filter(fn (FurnitureProduct $product) => $this->matchesPreferences($product, $preference))
-            ->values();
-        $hasPriorSignals = Favorite::where('user_id', $user->id)->exists()
-            || Reservation::where('user_id', $user->id)->exists();
-        $collaborative = $this->collaborativeScores($user, $products);
+        $products = FurnitureProduct::query()
+            ->active()
+            ->ofRecommendationType($furnitureType)
+            ->matchingPreference($preference)
+            ->get();
 
-        $ranked = $products->map(function (FurnitureProduct $product) use ($preference, $collaborative) {
-            $content = $this->contentScore($product, $preference);
-            $collab = $collaborative[$product->id] ?? 0;
-            $total = round(($content * .82) + ($collab * .18), 3);
+        $history = $this->affinityHistory($user);
+        $collaborativeResult = $this->collaborativeScores($user, $products);
+        $rawCollaborative = $collaborativeResult['scores'];
+        $rawContent = $products->mapWithKeys(fn (FurnitureProduct $product) => [
+            $product->id => $this->contentScore($product, $preference, $history),
+        ])->all();
+        $contentScores = $this->normalizeScores($rawContent);
+        $collaborativeScores = $this->normalizeScores($rawCollaborative, allZeroAsZero: true);
 
-            return ['product' => $product, 'content' => $content, 'collaborative' => $collab, 'total' => $total];
-        })->sortByDesc('total')->take(8)->values();
+        $ranked = $products->map(function (FurnitureProduct $product) use ($preference, $contentScores, $collaborativeScores) {
+            $content = $contentScores[$product->id] ?? 50.0;
+            $collaborative = $collaborativeScores[$product->id] ?? 0.0;
+            $total = round((0.82 * $content) + (0.18 * $collaborative), 3);
+
+            return [
+                'product' => $product,
+                'content' => $content,
+                'collaborative' => $collaborative,
+                'total' => $total,
+                'price_fit' => $this->priceFit($product, $preference),
+            ];
+        })->sort(function (array $left, array $right) {
+            return ($right['total'] <=> $left['total'])
+                ?: ($right['content'] <=> $left['content'])
+                ?: ($left['product']->id <=> $right['product']->id);
+        })->take(8)->values();
 
         $ai = $this->gemini->localRecommendationSummary(array_merge($preference->toArray(), ['furniture_type' => $furnitureType]));
 
-        return DB::transaction(function () use ($user, $preference, $roomImage, $furnitureType, $ranked, $ai, $hasPriorSignals, $existing) {
+        return DB::transaction(function () use ($user, $preference, $roomImage, $furnitureType, $ranked, $ai, $collaborativeResult, $existing) {
             $recommendation = $existing ?? new Recommendation;
             $recommendation->fill([
                 'user_id' => $user->id,
@@ -44,9 +62,9 @@ class RecommendationService
                 'room_image_id' => $roomImage?->id,
                 'furniture_type' => $furnitureType,
                 'summary' => $ai['text'],
-                'algorithm_version' => 'hybrid-v3-strict-preferences',
+                'algorithm_version' => 'hybrid-v4-normalized',
                 'gemini_used' => $ai['used'],
-                'is_cold_start' => ! $hasPriorSignals,
+                'is_cold_start' => ! $collaborativeResult['has_similar_users'],
                 'content_weight' => 0.82,
                 'collaborative_weight' => 0.18,
             ]);
@@ -61,6 +79,7 @@ class RecommendationService
                     $this->matches($preference->wood_type, $product->wood_type) ? "uses your preferred {$product->wood_type} wood" : null,
                     $this->matches($preference->varnish_finish, $product->varnish_finish) ? "has the {$product->varnish_finish} finish you selected" : null,
                     ((float) $product->price >= (float) $preference->budget_min && (float) $product->price <= (float) $preference->budget_max) ? 'fits your budget range' : null,
+                    $row['price_fit'] >= 0.8 ? 'priced close to the middle of your budget' : null,
                 ])->filter()->values();
 
                 $recommendation->items()->create([
@@ -77,26 +96,125 @@ class RecommendationService
         });
     }
 
-    private function contentScore(FurnitureProduct $product, CustomerPreference $preference): float
+    private function contentScore(FurnitureProduct $product, CustomerPreference $preference, Collection $history): float
     {
-        $score = 10.0;
-        $price = (float) $product->price;
-        $min = (float) $preference->budget_min;
-        $max = max((float) $preference->budget_max, 1);
-        $score += ($price >= $min && $price <= $max) ? 30 : max(0, 30 - (abs($price - min(max($price, $min), $max)) / $max * 30));
-        $score += $this->matches($preference->style, $product->style) ? 20 : 0;
-        $score += $this->matches($preference->wood_type, $product->wood_type) ? 15 : 0;
-        $score += $this->matches($preference->varnish_finish, $product->varnish_finish) ? 15 : 0;
+        $priceFit = $this->priceFit($product, $preference);
+        $roomFit = $this->roomFit($product, $preference);
+        $affinity = $this->affinity($product, $history);
 
-        if ($preference->room_width_m && $preference->room_depth_m && $product->width_cm && $product->depth_cm) {
-            $fits = ((float) $product->width_cm / 100 <= (float) $preference->room_width_m * .85)
-                && ((float) $product->depth_cm / 100 <= (float) $preference->room_depth_m * .85);
-            $score += $fits ? 10 : 0;
-        } else {
-            $score += 5;
+        return round(100 * ((0.40 * $priceFit) + (0.35 * $roomFit) + (0.25 * $affinity)), 3);
+    }
+
+    private function priceFit(FurnitureProduct $product, CustomerPreference $preference): float
+    {
+        $minimum = (float) $preference->budget_min;
+        $maximum = (float) $preference->budget_max;
+
+        if ($minimum === $maximum) {
+            return 1.0;
         }
 
-        return round(min(100, $score), 3);
+        $midpoint = ($minimum + $maximum) / 2;
+        $halfRange = max(1.0, ($maximum - $minimum) / 2);
+
+        return 1 - min(1, abs((float) $product->price - $midpoint) / $halfRange);
+    }
+
+    private function roomFit(FurnitureProduct $product, CustomerPreference $preference): float
+    {
+        $roomWidth = (float) $preference->room_width_m;
+        $roomDepth = (float) $preference->room_depth_m;
+        $productWidth = (float) $product->width_cm;
+        $productDepth = (float) $product->depth_cm;
+
+        if ($roomWidth <= 0 || $roomDepth <= 0 || $productWidth <= 0 || $productDepth <= 0) {
+            return 0.5;
+        }
+
+        if (($productWidth / 100) > ($roomWidth * 0.85) || ($productDepth / 100) > ($roomDepth * 0.85)) {
+            return 0.0;
+        }
+
+        $ratio = (($productWidth / 100) * ($productDepth / 100)) / ($roomWidth * $roomDepth);
+
+        if ($ratio < 0.15) {
+            return max(0.4, min(1.0, 0.4 + (($ratio - 0.05) / 0.10) * 0.6));
+        }
+
+        if ($ratio <= 0.55) {
+            return 1.0;
+        }
+
+        return max(0.4, min(1.0, 1.0 - (($ratio - 0.55) / 0.15) * 0.6));
+    }
+
+    private function affinity(FurnitureProduct $product, Collection $history): float
+    {
+        if ($history->isEmpty()) {
+            return 0.5;
+        }
+
+        $dimensions = ['style', 'wood_type', 'varnish_finish'];
+        $scores = [];
+
+        foreach ($dimensions as $dimension) {
+            $totalWeight = 0;
+            $matchedWeight = 0;
+            $candidateValue = trim((string) $product->{$dimension});
+
+            foreach ($history as $entry) {
+                $historicalValue = trim((string) ($entry['product']?->{$dimension} ?? ''));
+                if ($candidateValue === '' || $historicalValue === '') {
+                    continue;
+                }
+
+                $weight = (int) $entry['weight'];
+                $totalWeight += $weight;
+                if (strcasecmp($candidateValue, $historicalValue) === 0) {
+                    $matchedWeight += $weight;
+                }
+            }
+
+            $scores[] = $totalWeight > 0 ? $matchedWeight / $totalWeight : 0.5;
+        }
+
+        return array_sum($scores) / count($scores);
+    }
+
+    private function affinityHistory(User $user): Collection
+    {
+        $productColumns = 'id,style,wood_type,varnish_finish';
+        $views = FurnitureViewEvent::query()
+            ->where('user_id', $user->id)
+            ->with(['product:'.$productColumns])
+            ->get()
+            ->map(fn (FurnitureViewEvent $event) => ['product' => $event->product, 'weight' => 1]);
+        $favorites = Favorite::query()
+            ->where('user_id', $user->id)
+            ->with(['product:'.$productColumns])
+            ->get()
+            ->map(fn (Favorite $favorite) => ['product' => $favorite->product, 'weight' => 2]);
+
+        return $views->concat($favorites)->filter(fn (array $entry) => $entry['product'] !== null)->values();
+    }
+
+    private function normalizeScores(array $scores, bool $allZeroAsZero = false): array
+    {
+        if ($scores === []) {
+            return [];
+        }
+
+        $minimum = min($scores);
+        $maximum = max($scores);
+
+        if (abs($maximum - $minimum) < 0.0000001) {
+            $normalized = $allZeroAsZero && abs((float) $maximum) < 0.0000001 ? 0.0 : 50.0;
+            return array_fill_keys(array_keys($scores), $normalized);
+        }
+
+        $range = $maximum - $minimum;
+
+        return array_map(fn ($score) => round((((float) $score - $minimum) / $range) * 100, 3), $scores);
     }
 
     public function matchesPreferences(FurnitureProduct $product, CustomerPreference $preference): bool
@@ -111,8 +229,10 @@ class RecommendationService
 
     public function closestSuggestions(CustomerPreference $preference, string $type): Collection
     {
-        return FurnitureProduct::where('status', 'active')->get()
-            ->filter(fn ($product) => $product->recommendationType() === $type && ! $this->matchesPreferences($product, $preference))
+        $products = FurnitureProduct::query()->active()->ofRecommendationType($type);
+        $matchingProducts = (clone $products)->matchingPreference($preference)->select('id');
+
+        return $products->whereNotIn('id', $matchingProducts)->get()
             ->map(function ($product) use ($preference) {
                 $differences = [];
                 foreach (['wood_type' => 'Wood', 'style' => 'Style', 'varnish_finish' => 'Finish'] as $field => $label) {
@@ -132,25 +252,51 @@ class RecommendationService
 
     private function collaborativeScores(User $user, Collection $products): array
     {
-        $own = Favorite::where('user_id', $user->id)->pluck('furniture_product_id')
-            ->merge(Reservation::where('user_id', $user->id)->pluck('furniture_product_id'))->unique();
+        $favoriteInteractions = Favorite::query()->select('user_id', 'furniture_product_id')->distinct()->get();
+        $reservationInteractions = Reservation::query()
+            ->where('status', '!=', 'cancelled')
+            ->select('user_id', 'furniture_product_id')
+            ->distinct()
+            ->get();
 
-        $similarUserIds = $own->isEmpty() ? collect() : Favorite::whereIn('furniture_product_id', $own)
-            ->where('user_id', '!=', $user->id)->pluck('user_id')->unique();
-
-        $signals = collect();
-        if ($similarUserIds->isNotEmpty()) {
-            $signals = Favorite::whereIn('user_id', $similarUserIds)->select('furniture_product_id', DB::raw('count(*) as favorite_count'))
-                ->groupBy('furniture_product_id')->pluck('favorite_count', 'furniture_product_id');
+        $interactionsByUser = [];
+        foreach ($favoriteInteractions->concat($reservationInteractions) as $interaction) {
+            $interactionsByUser[$interaction->user_id][(int) $interaction->furniture_product_id] = true;
         }
 
-        if ($signals->isEmpty()) {
-            $signals = Favorite::select('furniture_product_id', DB::raw('count(*) as favorite_count'))->groupBy('furniture_product_id')->pluck('favorite_count', 'furniture_product_id');
+        $ownInteractions = $interactionsByUser[$user->id] ?? [];
+        $scores = $products->mapWithKeys(fn (FurnitureProduct $product) => [$product->id => 0.0])->all();
+        if ($ownInteractions === []) {
+            return ['scores' => $scores, 'has_similar_users' => false];
         }
 
-        $max = max(1, (int) $signals->max());
+        $candidateIds = array_fill_keys($products->pluck('id')->map(fn ($id) => (int) $id)->all(), true);
+        $hasSimilarUsers = false;
 
-        return $products->mapWithKeys(fn ($product) => [$product->id => round(((int) ($signals[$product->id] ?? 0) / $max) * 100, 3)])->all();
+        foreach ($interactionsByUser as $otherUserId => $otherInteractions) {
+            if ((int) $otherUserId === (int) $user->id || $otherInteractions === []) {
+                continue;
+            }
+
+            $intersection = count(array_intersect_key($ownInteractions, $otherInteractions));
+            if ($intersection === 0) {
+                continue;
+            }
+
+            $similarity = $intersection / (count($ownInteractions) + count($otherInteractions) - $intersection);
+            if ($similarity <= 0) {
+                continue;
+            }
+
+            $hasSimilarUsers = true;
+            foreach ($otherInteractions as $productId => $_) {
+                if (isset($candidateIds[$productId]) && ! isset($ownInteractions[$productId])) {
+                    $scores[$productId] += $similarity;
+                }
+            }
+        }
+
+        return ['scores' => $scores, 'has_similar_users' => $hasSimilarUsers];
     }
 
     private function matches(?string $expected, ?string $actual): bool
@@ -158,4 +304,3 @@ class RecommendationService
         return blank($expected) || strcasecmp(trim($expected), trim((string) $actual)) === 0;
     }
 }
-

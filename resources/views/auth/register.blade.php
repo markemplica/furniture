@@ -7,7 +7,7 @@
         <a class="guest-brand" href="{{ route('home') }}" aria-label="FurniCraft home"><span class="brand-mark" aria-hidden="true">F</span> FurniCraft</a>
         <div class="auth-story-copy">
             <p class="section-kicker">Customer account</p>
-            <h1 id="auth-story-title">Plan with measurements, not guesswork.</h1>
+            <h1 id="auth-story-title">Plan your space with confidence.</h1>
             <p>Save preferences, compare recommendations, preview placement, and send reservation requests to Lance Furniture Shop.</p>
         </div>
         <p class="small mb-0 auth-story-note">Your account is activated after you verify your email.</p>
@@ -68,13 +68,13 @@
                 <div class="row g-3">
                     <div class="col-sm-6">
                         <label class="form-label" for="password">Password</label>
-                        <input class="form-control @error('password') is-invalid @enderror" id="password" type="password" name="password" minlength="8" required autocomplete="new-password" aria-describedby="password-hint password-error">
-                        <div class="form-text" id="password-hint">Use at least 8 characters.</div>
+                        <input class="form-control @error('password') is-invalid @enderror" id="password" type="password" name="password" minlength="10" required autocomplete="new-password" aria-describedby="password-hint password-error">
+                        <div class="form-text" id="password-hint">Use at least 10 characters with letters and numbers.</div>
                         @error('password')<div class="invalid-feedback" id="password-error">{{ $message }}</div>@enderror
                     </div>
                     <div class="col-sm-6">
                         <label class="form-label" for="password_confirmation">Confirm password</label>
-                        <input class="form-control" id="password_confirmation" type="password" name="password_confirmation" minlength="8" required autocomplete="new-password">
+                        <input class="form-control" id="password_confirmation" type="password" name="password_confirmation" minlength="10" required autocomplete="new-password">
                     </div>
                 </div>
                 <button class="btn btn-primary btn-lg w-100" type="submit">Create account</button>

@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ProfileDeletionRequest;
+use App\Http\Requests\ProfilePasswordUpdateRequest;
+use App\Http\Requests\ProfileUpdateRequest;
 use Illuminate\Http\Request;
 use App\Services\PrivacyAudit;
 use App\Services\RoomPhotoService;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Validation\Rule;
-use Illuminate\Validation\Rules\Password;
 use Illuminate\Support\Facades\DB;
 
 class ProfileController extends Controller
@@ -17,26 +18,19 @@ class ProfileController extends Controller
         return view('profile.edit', ['user' => $request->user()]);
     }
 
-    public function update(Request $request)
+    public function update(ProfileUpdateRequest $request)
     {
         $user = $request->user();
-        $data = $request->validate([
-            'name' => ['required', 'string', 'max:100'],
-            'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
-            'phone' => ['nullable', 'string', 'max:32'],
-        ]);
+        $data = $request->validated();
 
         $user->update($data);
 
         return redirect()->route('profile.edit')->with('success', 'Your profile information has been updated.');
     }
 
-    public function updatePassword(Request $request)
+    public function updatePassword(ProfilePasswordUpdateRequest $request)
     {
-        $data = $request->validate([
-            'current_password' => ['required', 'current_password'],
-            'password' => ['required', 'confirmed', Password::min(8)],
-        ]);
+        $data = $request->validated();
 
         $request->user()->update(['password' => $data['password']]);
         $request->session()->regenerate();
@@ -44,12 +38,9 @@ class ProfileController extends Controller
         return redirect()->route('profile.edit')->with('success', 'Your password has been changed.');
     }
 
-    public function destroy(Request $request, RoomPhotoService $photos, PrivacyAudit $audit)
+    public function destroy(ProfileDeletionRequest $request, RoomPhotoService $photos, PrivacyAudit $audit)
     {
-        $request->validate([
-            'current_password' => ['required', 'current_password'],
-            'confirm_account_deletion' => ['required', 'in:DELETE'],
-        ]);
+        $request->validated();
         $user = $request->user();
         $rooms = $user->roomImages()->get();
         foreach ($rooms as $room) $photos->deleteRoomFiles($room);

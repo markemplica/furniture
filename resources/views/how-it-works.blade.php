@@ -20,7 +20,7 @@
         <a class="home-service-card" href="{{ route('preferences.edit') }}"><span>02</span><div><h3>AI recommendations</h3><p>Share your room details and preferences to receive clear, ranked furniture matches.</p></div><b aria-hidden="true">&rarr;</b></a>
         <a class="home-service-card" href="{{ route('room.index') }}"><span>03</span><div><h3>Room preview</h3><p>Upload your space and compare recommended pieces in one connected planning workflow.</p></div><b aria-hidden="true">&rarr;</b></a>
     </div>
-    @guest<p class="access-note">You can learn how FurniCraft works freely. <strong>Log in to access</strong> the catalog and planning tools.</p>@endguest
+    @guest<p class="access-note">You can browse the public catalog without an account. <strong>Sign in to save preferences, plan a room, save favorites, or request a reservation.</strong></p>@endguest
 </section>
 
 <section class="process-grid" aria-labelledby="how-heading">
@@ -30,7 +30,7 @@
         <p>Every step keeps the decision practical, transparent, and grounded in the Lance Furniture Shop catalog.</p>
     </div>
     <ol>
-        <li><strong>Define your space</strong><span>Add your budget, style, materials, measurements, and an optional room photo.</span></li>
+        <li><strong>Set your preferences</strong><span>Choose a budget, style, and materials. Add a room photo for an optional AI fit; no room dimensions are needed.</span></li>
         <li><strong>Review intelligent matches</strong><span>Compare ranked furniture with concise explanations and room-fit context.</span></li>
         <li><strong>Preview and reserve</strong><span>Use the 2D room comparison, ask questions, then request a reservation from Lance Furniture Shop.</span></li>
     </ol>

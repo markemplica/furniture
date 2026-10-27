@@ -15,9 +15,9 @@ use App\Http\Controllers\RecommendationController;
 use App\Http\Controllers\RecommendationFeedbackController;
 use App\Http\Controllers\ReservationController;
 use App\Http\Controllers\RoomController;
+use App\Http\Controllers\RoomVisualizationController;
 use App\Http\Controllers\RoomPreviewV2Controller;
 use App\Http\Controllers\RoomPhotoController;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [DashboardController::class, 'index'])->name('home');
@@ -43,15 +43,7 @@ Route::middleware('guest')->group(function () {
     Route::post('/reset-password', [PasswordResetController::class, 'reset'])->name('password.update')->middleware('throttle:8,1');
 });
 Route::middleware('auth')->group(function () {
-    Route::get('/reservations', function (Request $request) {
-        if ($request->user()->isAdmin()) {
-            return redirect()->route('admin.reservations.index');
-        }
-
-        abort_unless($request->user()->role === 'customer', 403);
-
-        return app(ReservationController::class)->index($request);
-    })->name('reservations.index');
+    Route::get('/reservations', [ReservationController::class, 'index'])->name('reservations.index');
     Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
     Route::get('/room-images/{roomImage}', [RoomPhotoController::class, 'original'])->name('room-images.original');
     Route::get('/room-images/{roomImage}/previews/{product}', [RoomPhotoController::class, 'preview'])->whereNumber('product')->name('room-images.preview');
@@ -69,15 +61,15 @@ Route::middleware('auth')->group(function () {
         Route::get('/recommendations', [RecommendationController::class, 'index'])->name('recommendations.index');
         Route::get('/recommendations/{recommendation}', [RecommendationController::class, 'show'])->name('recommendations.show');
         Route::post('/recommendations/{recommendation}/items/{recommendationItem}/feedback', [RecommendationFeedbackController::class, 'update'])->name('recommendations.items.feedback');
-        Route::post('/recommendations/{recommendation}/chat', [ChatController::class, 'store'])->name('recommendations.chat');
+        Route::post('/recommendations/{recommendation}/chat', [ChatController::class, 'store'])->name('recommendations.chat')->middleware('throttle:20,1');
         Route::get('/room', [RoomController::class, 'index'])->name('room.index');
         Route::post('/room', [RoomController::class, 'store'])->name('room.store')->middleware('throttle:10,60');
         Route::delete('/room/{roomImage}', [RoomController::class, 'destroy'])->name('room.destroy');
         Route::delete('/room/{roomImage}/ai-consent', [RoomController::class, 'revokeAiConsent'])->name('room.ai-consent.revoke');
-        Route::get('/room/{roomImage}/visualize', [RoomController::class, 'visualize'])->name('room.visualize');
+        Route::get('/room/{roomImage}/visualize', [RoomVisualizationController::class, 'visualize'])->name('room.visualize');
         Route::get('/room/{roomImage}/analysis-status', [RoomController::class, 'analysisStatus'])->name('room.analysis-status');
-        Route::post('/room/{roomImage}/preview-verify/{product}', [RoomController::class, 'verifyPreview'])->whereNumber('product')->name('room.preview-verify')->middleware('throttle:15,1');
-        Route::get('/room/{roomImage}/preview-status/{product}', [RoomController::class, 'previewStatus'])->whereNumber('product')->name('room.preview-status');
+        Route::post('/room/{roomImage}/preview-verify/{product}', [RoomVisualizationController::class, 'verifyPreview'])->whereNumber('product')->name('room.preview-verify')->middleware('throttle:6,1');
+        Route::get('/room/{roomImage}/preview-status/{product}', [RoomVisualizationController::class, 'previewStatus'])->whereNumber('product')->name('room.preview-status');
         Route::post('/room/{roomImage}/reanalyze', [RoomController::class, 'reanalyze'])->name('room.reanalyze')->middleware('throttle:3,1');
         Route::post('/room/{roomImage}/preview-v2', [RoomPreviewV2Controller::class, 'store'])->name('room.preview-v2.store')->middleware('throttle:10,60');
         Route::get('/room/{roomImage}/preview-v2/{generation}', [RoomPreviewV2Controller::class, 'status'])->whereNumber('generation')->name('room.preview-v2.status')->middleware('throttle:60,1');

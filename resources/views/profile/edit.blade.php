@@ -48,12 +48,12 @@
 
         <dialog class="reservation-dialog profile-action-dialog" id="change-password-dialog" aria-labelledby="password-heading" @if(old('account_action') === 'change-password' && ($errors->has('current_password') || $errors->has('password'))) data-open-on-load @endif>
             <div class="d-flex justify-content-between align-items-start gap-3 mb-2"><h2 id="password-heading" class="h3">Change password</h2><button class="btn-close" type="button" data-profile-dialog-close aria-label="Close"></button></div>
-            <p class="text-muted">Enter your current password before choosing a new password with at least eight characters.</p>
+            <p class="text-muted">Enter your current password before choosing a new password. Use at least 10 characters with letters and numbers.</p>
             <form method="POST" action="{{ route('profile.password') }}" class="row g-3 mt-1">
                 @csrf @method('PUT')<input type="hidden" name="account_action" value="change-password">
                 <div class="col-12"><label class="form-label" for="current_password">Current password</label><input class="form-control @error('current_password') is-invalid @enderror" id="current_password" name="current_password" type="password" autocomplete="current-password" required>@error('current_password')<div class="invalid-feedback">{{ $message }}</div>@enderror</div>
-                <div class="col-md-6"><label class="form-label" for="password">New password</label><input class="form-control @error('password') is-invalid @enderror" id="password" name="password" type="password" minlength="8" autocomplete="new-password" required>@error('password')<div class="invalid-feedback">{{ $message }}</div>@enderror</div>
-                <div class="col-md-6"><label class="form-label" for="password_confirmation">Confirm new password</label><input class="form-control" id="password_confirmation" name="password_confirmation" type="password" minlength="8" autocomplete="new-password" required></div>
+                <div class="col-md-6"><label class="form-label" for="password">New password</label><input class="form-control @error('password') is-invalid @enderror" id="password" name="password" type="password" minlength="10" autocomplete="new-password" required>@error('password')<div class="invalid-feedback">{{ $message }}</div>@enderror</div>
+                <div class="col-md-6"><label class="form-label" for="password_confirmation">Confirm new password</label><input class="form-control" id="password_confirmation" name="password_confirmation" type="password" minlength="10" autocomplete="new-password" required></div>
                 <div class="col-12 d-flex justify-content-end gap-2"><button class="btn btn-outline-secondary" type="button" data-profile-dialog-close>Cancel</button><button class="btn btn-dark" type="submit">Change password</button></div>
             </form>
         </dialog>

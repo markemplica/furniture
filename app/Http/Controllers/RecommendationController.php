@@ -48,9 +48,10 @@ class RecommendationController extends Controller
         if ($recommendation->algorithm_version !== 'hybrid-v3-strict-preferences') {
             $ranking->generate($request->user(), $recommendation->preference, $recommendation->roomImage, $recommendation->furniture_type, $recommendation);
         }
-        $recommendation->setRelation('items', $recommendation->items->filter(
-            fn ($item) => $item->product && $ranking->matchesPreferences($item->product, $recommendation->preference)
-        )->values());
+        $recommendation->setRelation('items', $recommendation->items()
+            ->whereHas('product', fn ($products) => $products->active()->matchingPreference($recommendation->preference))
+            ->with('product')
+            ->get());
         $room = $recommendation->roomImage;
         $placements = $room
             ? $recommendation->items->mapWithKeys(fn ($item) => [

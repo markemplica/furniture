@@ -4,6 +4,9 @@
 @php
     $selectedItem = $recommendation?->items->firstWhere('furniture_product_id', $selectedProduct?->id);
     $hasAiRoomFit = $roomImage->analysis_status === 'completed' && data_get($roomImage->analysis, 'gemini_used') && filled(data_get($roomImage->analysis, 'vision_geometry'));
+    $localEstimateIntro = $roomImage->gemini_consent_at
+        ? 'A local 2D estimate is shown because an AI room fit is not available. '.($roomImage->analysis_error ?: 'You can retry the room analysis.')
+        : 'A local 2D estimate is shown. This photo was not sent to Gemini. Upload it again and opt in to AI analysis if you want an image-based fit.';
 @endphp
 <div class="room-compare-layout">
     <aside class="room-compare-story">
@@ -11,7 +14,7 @@
         <h1>See <span data-preview-name>{{ $selectedProduct?->name ?? 'furniture' }}</span> in your space.</h1>
         <p class="room-compare-intro">{{ $hasAiRoomFit
             ? 'FurniCraft automatically positions and scales the selected furniture using the clear area and perspective detected in the room photo.'
-            : 'This room is currently using a local 2D estimate because AI fitting was unavailable. Restore Gemini access, then retry AI fitting for an image-based result.' }}</p>
+            : $localEstimateIntro }}</p>
 
 
 
@@ -52,9 +55,9 @@
         <div class="alert {{ $roomImage->analysis_status === 'failed' ? 'alert-warning' : 'alert-light' }} fc-alert" role="status" aria-live="polite" data-room-analysis-watch="{{ route('room.analysis-status', $roomImage) }}" data-room-analysis-current="{{ $roomImage->analysis_status }}">
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
                 <div><strong data-room-analysis-label>{{ $analysisLabel }}</strong><div class="small text-muted" data-room-analysis-message>{{ $roomImage->analysis_error ?: ($analysisRunning ? 'You may keep this page open; the final analysis will appear automatically.' : 'Placement confidence and detected room zones are shown below.') }}</div></div>
-                @unless($analysisRunning || auth()->user()->isAdmin())
+                @if(!$analysisRunning && !auth()->user()->isAdmin() && $roomImage->gemini_consent_at && !$hasAiRoomFit)
                     <form method="POST" action="{{ route('room.reanalyze', $roomImage) }}">@csrf<button class="btn btn-sm btn-outline-primary" type="submit">Re-analyze room</button></form>
-                @endunless
+                @endif
             </div>
         </div>
 <div class="placement-status" aria-live="polite">
@@ -89,7 +92,6 @@
                 <button type="button" class="btn btn-outline-primary" data-preview-retry>Retry AI preview</button>
                 @endif
             <button type="button" class="btn btn-primary" data-preview-download>Download preview (PNG)</button>
-            <form method="POST" action="{{ route('room.reanalyze',$roomImage) }}">@csrf<button class="btn btn-outline-secondary" type="submit">Try again</button></form>
             <a class="btn btn-outline-secondary" href="{{ route('preferences.edit',['room'=>$roomImage->id]) }}#room-preview">Upload another photo</a>
         </div>
             <p class="automatic-placement-note">Preview is an estimate, not a measurement. Verify actual dimensions with Lance Furniture Shop before reserving.</p>

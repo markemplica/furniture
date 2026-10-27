@@ -1,5 +1,12 @@
+param([switch]$Lan)
+
 $ErrorActionPreference = 'Stop'
 $appRoot = $PSScriptRoot
+$bindAddress = '127.0.0.1'
+if ($Lan) {
+    $bindAddress = '0.0.0.0'
+    Write-Warning 'LAN access exposes this server to the network. Ensure APP_DEBUG=false before continuing.'
+}
 $php = 'C:\xampp\php\php.exe'
 $artisan = Join-Path $appRoot 'artisan'
 $router = Join-Path $appRoot 'vendor\laravel\framework\src\Illuminate\Foundation\resources\server.php'
@@ -9,7 +16,7 @@ if (!(Test-Path $php) -or !(Test-Path $router) -or !(Test-Path (Join-Path $appRo
 }
 New-Item -ItemType Directory -Path $logs -Force | Out-Null
 $services = @(
-    @{ Name='web'; Args=@('-S','0.0.0.0:8000',('"'+$router+'"')); Directory=(Join-Path $appRoot 'public'); Match=[regex]::Escape($router) },
+    @{ Name='web'; Args=@('-S',("${bindAddress}:8000"),('"'+$router+'"')); Directory=(Join-Path $appRoot 'public'); Match=[regex]::Escape($router) },
     @{ Name='queue'; Args=@(('"'+$artisan+'"'),'queue:work','--tries=3','--timeout=540'); Directory=$appRoot; Match=([regex]::Escape($artisan)+'"?\s+queue:work') },
     @{ Name='scheduler'; Args=@(('"'+$artisan+'"'),'schedule:work'); Directory=$appRoot; Match=([regex]::Escape($artisan)+'"?\s+schedule:work') }
 )

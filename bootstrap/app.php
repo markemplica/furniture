@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\EnsureRole;
 use App\Http\Middleware\EnsureAccountIsActive;
+use App\Support\SafeRedirectTarget;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -20,9 +21,11 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => EnsureRole::class,
         ]);
 
-        $middleware->redirectGuestsTo(fn (Request $request) => route('login', [
-            'redirect' => $request->fullUrl(),
-        ]));
+        $middleware->redirectGuestsTo(function (Request $request) {
+            $redirect = SafeRedirectTarget::resolve($request->fullUrl(), $request, '');
+
+            return route('login', $redirect !== '' ? ['redirect' => $redirect] : []);
+        });
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

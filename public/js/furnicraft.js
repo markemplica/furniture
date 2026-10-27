@@ -405,6 +405,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <h3 class="mt-2"><a class="text-reset text-decoration-none" href="${escapeHtml(item.url)}">${escapeHtml(item.name)}</a></h3>
                     <p class="product-meta"><span class="swatch ${escapeHtml(String(item.wood_type).toLowerCase())}"></span>${escapeHtml(item.wood_type)} · ${escapeHtml(item.varnish_finish)} · ${escapeHtml(item.style)}</p>
                     <p class="product-price">PHP ${Number(item.price).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                    <div class="product-card-actions"><a class="btn btn-outline-dark w-100" href="${escapeHtml(item.url)}">View details</a></div>
                 </div>
             </article>`;
 

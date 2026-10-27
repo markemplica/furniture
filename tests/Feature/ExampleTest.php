@@ -17,6 +17,7 @@ use App\Services\GeminiService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Notifications\SendQueuedNotifications;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
@@ -85,7 +86,10 @@ class ExampleTest extends TestCase
     {
         $product = $this->product();
 
-        foreach (['/catalog', '/catalog/'.$product->slug, '/profile', '/preferences', '/room', '/reservations', '/admin'] as $path) {
+        $this->get('/catalog')->assertOk()->assertSee($product->name);
+        $this->get('/catalog/'.$product->slug)->assertOk()->assertSee($product->name);
+
+        foreach (['/profile', '/preferences', '/room', '/reservations', '/admin'] as $path) {
             $this->get($path)->assertRedirectContains('/login');
         }
 
@@ -176,12 +180,12 @@ class ExampleTest extends TestCase
         $this->actingAs($user)->get('/admin')->assertForbidden();
     }
 
-    public function test_login_returns_a_guest_to_the_featured_product_they_opened(): void
+    public function test_guest_can_view_featured_product_and_login_can_return_to_it(): void
     {
         $user = User::factory()->create(['email' => 'return@example.com']);
         $product = $this->product();
         $target = route('catalog.show', $product);
-        $this->get($target)->assertRedirect();
+        $this->get($target)->assertOk()->assertSee($product->name);
         $this->post('/login', ['email' => $user->email, 'password' => 'password', 'redirect' => $target])->assertRedirect($target);
     }
 
@@ -392,7 +396,7 @@ class ExampleTest extends TestCase
             ->assertOk()
             ->assertSee('value="Door"', false)
             ->assertSee('Door')
-            ->assertSeeInOrder(['Step 1 · Required', 'name="furniture_type"', 'Step 2 · Required', 'id="recommendation-form"'], false)
+            ->assertSeeInOrder(['Step 1 · Required', 'name="furniture_type"', 'Step 2 · Optional', 'id="recommendation-form"'], false)
             ->assertDontSee('Step 3 · AI-powered');
 
         $this->assertSame('Door', $user->preference()->firstOrFail()->furniture_type);
@@ -1065,7 +1069,7 @@ class ExampleTest extends TestCase
 
     public function test_admin_approval_sends_one_item_readiness_notification_and_logs_it(): void
     {
-        Notification::fake();
+        Queue::fake();
         $admin = User::factory()->create(['role' => 'admin']);
         $customer = User::factory()->create();
         $product = $this->product();
@@ -1074,17 +1078,21 @@ class ExampleTest extends TestCase
         $this->actingAs($admin)->patch(route('admin.reservations.update', $reservation), ['status' => 'confirmed'])->assertRedirect();
 
         $this->assertSame('confirmed', $reservation->fresh()->status);
-        Notification::assertSentTo($customer, ReservationConfirmedNotification::class, function (ReservationConfirmedNotification $notification) use ($customer, $product): bool {
+        Queue::assertPushed(SendQueuedNotifications::class, function (SendQueuedNotifications $job) use ($customer, $product): bool {
+            if (! $job->notification instanceof ReservationConfirmedNotification || ! $job->notifiables->contains($customer)) {
+                return false;
+            }
+
+            $notification = $job->notification;
             $mail = $notification->toMail($customer);
-            $message = implode(' ', $mail->introLines);
+            $details = collect($mail->viewData['details'])->pluck('value', 'label');
 
             return $mail->subject === ReservationConfirmedNotification::SUBJECT
-                && str_contains($message, 'approved your FurniCraft reservation request')
-                && str_contains($message, 'FC-TEST-001')
-                && str_contains($message, $product->name)
-                && str_contains($message, 'Selected shop: Lingayen')
-                && str_contains($message, 'does not guarantee that the item is physically in stock')
-                && str_contains($message, 'Contact Lance Furniture Shop before visiting');
+                && str_contains($mail->viewData['intro'], 'reviewed and approved your reservation request')
+                && ($details['REFERENCE'] ?? null) === 'FC-TEST-001'
+                && ($details['FURNITURE'] ?? null) === $product->name
+                && ($details['SHOP'] ?? null) === 'Lingayen'
+                && str_contains($mail->viewData['note'], 'confirm physical availability, item readiness, and operating hours');
         });
 
         $log = NotificationLog::where('type', 'reservation_confirmed')->firstOrFail();
@@ -1094,7 +1102,7 @@ class ExampleTest extends TestCase
         $this->assertSame('contact_branch_to_confirm_item_readiness', $log->payload['next_step']);
 
         $this->actingAs($admin)->patch(route('admin.reservations.update', $reservation), ['status' => 'confirmed'])->assertRedirect();
-        Notification::assertSentTo($customer, ReservationConfirmedNotification::class, 1);
+        Queue::assertPushed(SendQueuedNotifications::class, 1);
         $this->assertSame(1, NotificationLog::where('type', 'reservation_confirmed')->count());
     }
 

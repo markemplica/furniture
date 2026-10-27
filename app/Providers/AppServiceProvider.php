@@ -2,8 +2,10 @@
 
 namespace App\Providers;
 
+use App\Services\GeminiClient;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Validation\Rules\Password;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -12,7 +14,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(GeminiClient::class);
     }
 
     /**
@@ -21,5 +23,11 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Paginator::useBootstrapFive();
+
+        Password::defaults(function () {
+            $rule = Password::min(10)->letters()->numbers();
+
+            return app()->isProduction() ? $rule->uncompromised() : $rule;
+        });
     }
 }

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ReservationCancelRequest;
+use App\Http\Requests\ReservationStoreRequest;
 use App\Models\FurnitureProduct;
 use App\Models\Recommendation;
 use App\Models\Reservation;
@@ -14,26 +16,18 @@ class ReservationController extends Controller
 {
     public function index(Request $request)
     {
+        if ($request->user()->isAdmin()) {
+            return redirect()->route('admin.reservations.index');
+        }
+
+        abort_unless($request->user()->role === 'customer', 403);
+
         return view('reservations.index', ['reservations' => $request->user()->reservations()->with('product')->latest()->paginate(12)]);
     }
 
-    public function store(Request $request)
+    public function store(ReservationStoreRequest $request)
     {
-        $request->mergeIfMissing(['branch' => config('furnicraft.branch')]);
-        $data = $request->validate([
-            'furniture_product_id' => ['required', 'exists:furniture_products,id'],
-            'recommendation_id' => ['nullable', 'exists:recommendations,id'],
-            'branch' => ['required', Rule::in(config('furnicraft.branches'))],
-            'preferred_visit_at' => ['nullable', 'date', 'after:now'],
-            'notes' => ['nullable', 'string', 'max:1000'],
-            'customization_requested' => ['nullable', 'boolean'],
-            'custom_width_cm' => ['nullable', 'numeric', 'min:1', 'max:500'],
-            'custom_depth_cm' => ['nullable', 'numeric', 'min:1', 'max:500'],
-            'custom_height_cm' => ['nullable', 'numeric', 'min:1', 'max:500'],
-            'custom_wood_type' => ['nullable', 'string', 'max:80'],
-            'custom_varnish_finish' => ['nullable', 'string', 'max:80'],
-            'custom_design_notes' => ['nullable', 'string', 'max:1500', 'required_if:customization_requested,1'],
-        ]);
+        $data = $request->validated();
         if ($request->boolean('customization_requested')) {
             $dimensionValues = collect([
                 $data['custom_width_cm'] ?? null,
@@ -77,10 +71,10 @@ class ReservationController extends Controller
         return redirect()->route('reservations.index')->with('success', "Reservation {$reservation->reference} was submitted for review. No payment has been collected.");
     }
 
-    public function cancel(Request $request, Reservation $reservation)
+    public function cancel(ReservationCancelRequest $request, Reservation $reservation)
     {
         abort_unless($reservation->user_id === $request->user()->id, 403);
-        $data = $request->validate(['cancellation_reason' => ['nullable', 'string', 'max:1000']]);
+        $data = $request->validated();
         DB::transaction(function () use ($request, $reservation, $data) {
             $reservation = Reservation::whereKey($reservation->id)->lockForUpdate()->firstOrFail();
             abort_unless(in_array($reservation->status, ['pending', 'confirmed']), 422, 'Only active reservations can be cancelled.');

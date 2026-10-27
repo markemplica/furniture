@@ -1,5 +1,7 @@
 /.phpunit.cache
 /node_modules
+/test-results/
+/playwright-report/
 /public/build
 /public/hot
 /public/storage
@@ -9,6 +11,8 @@
 .env
 .env.backup
 .env.production
+.env.beta
+.env.staging
 .phpactor.json
 .phpunit.result.cache
 Homestead.json

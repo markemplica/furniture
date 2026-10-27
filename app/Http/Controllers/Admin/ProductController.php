@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Admin\ProductRequest;
 use App\Models\FurnitureProduct;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -22,9 +23,9 @@ class ProductController extends Controller
         return view('admin.products.create', $this->materialOptions());
     }
 
-    public function store(Request $request)
+    public function store(ProductRequest $request)
     {
-        $data = $this->validated($request);
+        $data = $request->validated();
         $data['slug'] = $this->uniqueSlug($data['name']);
         $data['created_by'] = $request->user()->id;
         if ($request->hasFile('image')) {
@@ -42,9 +43,9 @@ class ProductController extends Controller
         return view('admin.products.edit', array_merge(['product' => $product], $this->materialOptions()));
     }
 
-    public function update(Request $request, FurnitureProduct $product)
+    public function update(ProductRequest $request, FurnitureProduct $product)
     {
-        $data = $this->validated($request);
+        $data = $request->validated();
         if ($product->name !== $data['name']) {
             $data['slug'] = $this->uniqueSlug($data['name'], $product->id);
         }
@@ -87,16 +88,6 @@ class ProductController extends Controller
         }
 
         return back()->with('success', 'Furniture permanently deleted along with its catalog activity and preview records.');
-    }
-
-    private function validated(Request $request): array
-    {
-        return $request->validate([
-            'name' => ['required', 'string', 'max:150'], 'category' => ['required', 'string', 'max:80'], 'description' => ['required', 'string', 'max:3000'],
-            'wood_type' => ['required', 'string', 'max:100'], 'varnish_finish' => ['required', 'string', 'max:100'],
-            'style' => ['required', 'string', 'max:80'], 'price' => ['required', 'numeric', 'min:0'], 'width_cm' => ['nullable', 'numeric', 'min:1'], 'depth_cm' => ['nullable', 'numeric', 'min:1'], 'height_cm' => ['nullable', 'numeric', 'min:1'],
-            'tags' => ['nullable', 'string', 'max:500'], 'status' => ['required', Rule::in(['active', 'inactive'])], 'image' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:4096'],
-        ]);
     }
 
     private function uniqueSlug(string $name, ?int $ignore = null): string

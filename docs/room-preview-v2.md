@@ -15,7 +15,7 @@ ROOM_IMAGE_RETENTION_DAYS=30
 
 Run `php artisan migrate`, clear cached configuration with `php artisan config:clear`, and start a queue worker (`php artisan queue:work --tries=2 --timeout=540`). Start at 0-5%, inspect queue and AI telemetry, then increase rollout gradually. To stop immediately set `ROOM_PREVIEW_V2_ENABLED=false` and clear config cache.
 
-The authenticated POST endpoint accepts only `furniture_id`: `/room/{roomImage}/preview-v2`. It returns HTTP 202 with a status URL. Poll that URL; completed results include a short-lived signed artifact URL. The request never accepts prompts, client image bytes, product measurements, or placement coordinates. Owner checks, active catalog state, complete product dimensions, and the 10-per-hour route limit are enforced server-side.
+The authenticated POST endpoint accepts `furniture_id` and an optional `retry` boolean: `/room/{roomImage}/preview-v2`. `retry` requests a fresh attempt only when the cached result is a fallback. It returns HTTP 202 with a status URL, or the cached completed/fallback result. Poll the status URL; rendered results include a short-lived signed artifact URL. The request never accepts prompts, client image bytes, product measurements, or placement coordinates. Owner checks, active catalog state, complete product dimensions, and the 10-per-hour route limit are enforced server-side.
 
 ## Runtime requirements and behavior
 

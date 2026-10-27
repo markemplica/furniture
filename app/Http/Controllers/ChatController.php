@@ -2,23 +2,36 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ChatMessageRequest;
 use App\Models\ChatMessage;
 use App\Models\Recommendation;
 use App\Services\GeminiService;
 use App\Services\ChatPreferenceFilter;
 use App\Services\RecommendationService;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 
 class ChatController extends Controller
 {
-    public function store(Request $request, Recommendation $recommendation, GeminiService $gemini, ChatPreferenceFilter $filters, RecommendationService $ranking)
+    private const DAILY_MESSAGE_LIMIT = 100;
+    private const DAILY_MESSAGE_DECAY_SECONDS = 86400;
+
+    public function store(ChatMessageRequest $request, Recommendation $recommendation, GeminiService $gemini, ChatPreferenceFilter $filters, RecommendationService $ranking)
     {
         abort_unless($recommendation->user_id === $request->user()->id, 403);
-        $data = $request->validate(['message' => ['required', 'string', 'max:1000']]);
-        ChatMessage::create(['user_id' => $request->user()->id, 'recommendation_id' => $recommendation->id, 'role' => 'user', 'message' => $data['message']]);
+        $data = $request->validated();
+        $user = $request->user();
+        $rateLimitKey = 'chat-daily:'.$user->id;
+        if (RateLimiter::tooManyAttempts($rateLimitKey, self::DAILY_MESSAGE_LIMIT)) {
+            return back()->withErrors(['message' => "You have reached today's chat limit. Try again tomorrow."]);
+        }
+        RateLimiter::hit($rateLimitKey, self::DAILY_MESSAGE_DECAY_SECONDS);
+
+        ChatMessage::create(['user_id' => $user->id, 'recommendation_id' => $recommendation->id, 'role' => 'user', 'message' => $data['message']]);
         $filter = $filters->parse($data['message'], $recommendation->preference);
-        if ($filter) {
+        if (isset($filter['needs_clarification'])) {
+            $answer = ['used' => false, 'source' => 'catalog-rule', 'text' => $filter['needs_clarification']];
+        } elseif ($filter) {
             DB::transaction(function () use ($recommendation, $request, $filter, $ranking) {
                 $preference = $recommendation->preference()->lockForUpdate()->firstOrFail();
                 $preference->update($filter['updates']);
@@ -44,6 +57,10 @@ class ChatController extends Controller
             'catalog-rule' => 'FurniCraft replied using current catalog listings. Physical availability still needs confirmation with Lance Furniture Shop.',
             default => 'FurniCraft replied to your question.',
         };
+
+        if (isset($filter['needs_clarification'])) {
+            return back()->with('success', $answer['text']);
+        }
 
         return redirect()->route('recommendations.show', $recommendation)->with('success', $filter ? 'Preferences, ranked matches, and closest suggestions updated.' : $notice);
     }

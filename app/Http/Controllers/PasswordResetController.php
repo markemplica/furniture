@@ -9,6 +9,7 @@ use App\Notifications\PasswordResetCodeNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rules\Password;
 use Throwable;
 
 class PasswordResetController extends Controller
@@ -60,7 +61,7 @@ class PasswordResetController extends Controller
 
         if (! $this->deliverCode($user, $request)) {
             return redirect()->route('password.reset')->withErrors([
-                'email' => 'The code could not be sent because FurniCraft could not connect to Gmail SMTP. Check the computer’s internet connection or firewall, then try again.',
+                'email' => 'The code could not be sent because FurniCraft could not connect to the configured email service. Check its settings or connection, then try again.',
             ]);
         }
 
@@ -94,7 +95,7 @@ class PasswordResetController extends Controller
 
         if (! $this->deliverCode($user, $request)) {
             return redirect()->route('password.reset')->withErrors([
-                'email' => 'The code could not be sent because FurniCraft could not connect to Gmail SMTP. Check the computer’s internet connection or firewall, then try again.',
+                'email' => 'The code could not be sent because FurniCraft could not connect to the configured email service. Check its settings or connection, then try again.',
             ]);
         }
 
@@ -128,7 +129,7 @@ class PasswordResetController extends Controller
 
     public function reset(Request $request)
     {
-        $data = $request->validate(['email' => ['required', 'email'], 'password' => ['required', 'confirmed', 'min:8']]);
+        $data = $request->validate(['email' => ['required', 'email'], 'password' => ['required', 'confirmed', Password::defaults()]]);
         $email = strtolower($data['email']);
         $verifiedEmail = strtolower((string) $request->session()->get('password_reset_verified_email', ''));
         $record = PasswordResetCode::where('email', $email)->whereNull('used_at')->where('expires_at', '>', now())->latest()->first();

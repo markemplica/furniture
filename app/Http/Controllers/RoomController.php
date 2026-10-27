@@ -2,17 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\RoomStoreRequest;
 use App\Jobs\AnalyzeRoomImage;
-use App\Jobs\GenerateRoomPreview;
-use App\Models\FurnitureProduct;
-use App\Models\Recommendation;
 use App\Models\RoomImage;
-use App\Models\RoomPreviewGeneration;
-use App\Services\FurniturePlacementService;
 use App\Services\GeminiService;
 use App\Services\PrivacyAudit;
 use App\Services\RoomPhotoService;
-use Illuminate\Support\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\RateLimiter;
@@ -24,9 +19,9 @@ class RoomController extends Controller
         return redirect()->to(route('preferences.edit').'#room-preview');
     }
 
-    public function store(Request $request, GeminiService $gemini, RoomPhotoService $photos, PrivacyAudit $audit)
+    public function store(RoomStoreRequest $request, GeminiService $gemini, RoomPhotoService $photos, PrivacyAudit $audit)
     {
-        $data = $request->validate(['room_image' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:8192'], 'room_width_m' => ['nullable', 'numeric', 'min:1', 'max:50', 'required_with:room_depth_m'], 'room_depth_m' => ['nullable', 'numeric', 'min:1', 'max:50', 'required_with:room_width_m'], 'return_to' => ['nullable', 'in:recommendations'], 'gemini_consent' => ['nullable', 'boolean']]);
+        $data = $request->validated();
         $preference = $request->user()->preference()->first();
         if (! $preference || blank($preference->furniture_type)) {
             return redirect()->to(route('preferences.edit').'#preference-form')->withErrors(['workflow' => 'Save your furniture preferences before uploading a room image.']);
@@ -94,96 +89,6 @@ class RoomController extends Controller
         return redirect()->route('room.visualize', $room)->with('success', $message);
     }
 
-    public function visualize(Request $request, RoomImage $roomImage, GeminiService $gemini, FurniturePlacementService $placementService, RoomPhotoService $photos, PrivacyAudit $audit)
-    {
-        abort_unless($roomImage->user_id === $request->user()->id || $request->user()->isAdmin(), 403);
-
-        $recommendation = null;
-
-        if ($request->filled('recommendation')) {
-            $recommendation = Recommendation::with('items.product')
-                ->where('user_id', $request->user()->id)
-                ->findOrFail($request->integer('recommendation'));
-
-            abort_unless($recommendation->room_image_id === $roomImage->id, 403);
-        }
-
-        $products = FurnitureProduct::where('status', 'active')->orderBy('name')->get();
-        $firstRecommendedProduct = $recommendation?->items->first()?->product;
-        $selectedProduct = $request->filled('product')
-            ? $products->firstWhere('id', $request->integer('product'))
-            : ($firstRecommendedProduct ?? $products->first());
-
-        abort_if($request->filled('product') && ! $selectedProduct, 404);
-
-        $analysis = $roomImage->analysis ?? [];
-
-        $zonesMissing = blank($analysis['candidate_zones'] ?? null)
-            || (int) data_get($analysis, 'placement_profile_version', 0) < 2;
-        $analysisRunning = in_array($roomImage->analysis_status, ['queued', 'processing', 'retrying'], true);
-        $canAnalyzeZones = ! $roomImage->analysis_requested_at || $roomImage->analysis_requested_at->lt(now()->subMinutes(10));
-
-        if (! $request->user()->isAdmin() && $roomImage->gemini_consent_at && $selectedProduct && $zonesMissing && $gemini->isConfigured() && ! $analysisRunning && $canAnalyzeZones) {
-            $roomImage->update([
-                'analysis_status' => 'queued',
-                'analysis_error' => null,
-                'analysis_requested_at' => now(),
-            ]);
-            AnalyzeRoomImage::dispatch($roomImage->id, 'all catalog furniture');
-            $roomImage->refresh();
-        }
-
-        $selectedPlacement = $selectedProduct
-            ? $placementService->forProduct(
-                $roomImage->analysis ?? [],
-                $selectedProduct,
-                $roomImage->room_width_m ? (float) $roomImage->room_width_m : null,
-                $roomImage->room_depth_m ? (float) $roomImage->room_depth_m : null,
-            )
-            : null;
-
-        return view('room.visualize', compact('roomImage', 'selectedProduct', 'recommendation', 'selectedPlacement'));
-    }
-
-    public function verifyPreview(Request $request, RoomImage $roomImage, FurnitureProduct $product, GeminiService $gemini)
-    {
-        abort_unless($roomImage->user_id === $request->user()->id, 403);
-        abort_unless($roomImage->gemini_consent_at && $gemini->isConfigured(), 403, 'AI preview checking was not enabled for this photo.');
-        abort_unless($product->status === 'active', 404);
-        abort_unless($product->width_cm && $product->depth_cm && $product->height_cm, 422, 'Dimensions not available for this item.');
-
-        $data = $request->validate([
-            'preview' => ['required', 'string', 'max:2666668'],
-            'placement' => ['required', 'array'],
-            'placement.mode' => ['required', 'in:floor,wall,door'],
-            'placement.x' => ['required', 'numeric', 'between:0,1'],
-            'placement.y' => ['required', 'numeric', 'between:0,1'],
-            'placement.width' => ['required', 'numeric', 'between:0,1'],
-            'placement.height' => ['required', 'numeric', 'between:0,1'],
-            'placement.scale' => ['required', 'numeric', 'between:0.6,1.3'],
-        ]);
-        $result = $gemini->verifyRoomPlacement($roomImage->image_path, $data['preview'], $data['placement']);
-
-        $generation = RoomPreviewGeneration::firstOrNew([
-            'room_image_id' => $roomImage->id,
-            'furniture_product_id' => $product->id,
-        ]);
-        $history = $generation->placement_json ?? ['iterations' => []];
-        $history['iterations'][] = [
-            'placement' => $data['placement'],
-            'verifier' => $result,
-            'checked_at' => now()->toIso8601String(),
-        ];
-        $history['iterations'] = array_slice($history['iterations'], -3);
-        $generation->fill([
-            'status' => 'completed',
-            'attempts' => count($history['iterations']),
-            'placement_json' => $history,
-            'message' => $result['valid'] ? 'Automatic visual check completed.' : 'Safe local placement retained; AI visual check was unavailable.',
-        ])->save();
-
-        return response()->json($result);
-    }
     public function destroy(Request $request, RoomImage $roomImage, RoomPhotoService $photos, PrivacyAudit $audit)
     {
         abort_unless($roomImage->user_id === $request->user()->id, 403);
@@ -233,6 +138,14 @@ class RoomController extends Controller
         abort_unless($roomImage->user_id === $request->user()->id, 403);
         abort_if(in_array($roomImage->analysis_status, ['queued', 'processing', 'retrying'], true), 422, 'Room analysis is already in progress.');
 
+        if (! $roomImage->gemini_consent_at) {
+            $message = 'AI analysis is off for this photo. Upload it again and choose AI consent if you want Gemini to analyze it; the local estimate is still available.';
+
+            return $request->expectsJson()
+                ? response()->json(['message' => $message, 'status' => $roomImage->analysis_status], 422)
+                : back()->with('warning', $message);
+        }
+
         $roomImage->update([
             'analysis_status' => 'queued',
             'analysis_error' => null,
@@ -241,11 +154,11 @@ class RoomController extends Controller
         AnalyzeRoomImage::dispatch($roomImage->id, 'all catalog furniture');
         $roomImage->refresh();
 
-        $message = $roomImage->analysis_status === 'completed'
-            ? 'Room analysis completed successfully.'
-            : ($roomImage->analysis_status === 'fallback'
-                ? 'Local room guidance is ready; Gemini is not configured.'
-                : 'Room re-analysis has been queued.');
+        $message = match ($roomImage->analysis_status) {
+            'completed' => 'Room analysis completed successfully.',
+            'fallback' => $roomImage->analysis_error ?: 'Local room guidance is ready.',
+            default => 'Room re-analysis has been queued.',
+        };
 
         return $request->expectsJson()
             ? response()->json(['message' => $message, 'status' => $roomImage->analysis_status])
@@ -273,23 +186,6 @@ class RoomController extends Controller
             'message' => $roomImage->analysis_error,
             'ready' => in_array($roomImage->analysis_status, ['completed', 'fallback'], true),
             'analyzed_at' => $roomImage->analyzed_at?->toIso8601String(),
-        ]);
-    }
-
-    public function previewStatus(Request $request, RoomImage $roomImage, int $product)
-    {
-        abort_unless($roomImage->user_id === $request->user()->id, 403);
-        abort_unless($roomImage->gemini_consent_at, 404);
-        $generation = RoomPreviewGeneration::where('room_image_id', $roomImage->id)
-            ->where('furniture_product_id', $product)->firstOrFail();
-        $path = data_get($roomImage->analysis, 'generated_previews.'.$product.'.path');
-
-        return response()->json([
-            'status' => $generation->status,
-            'message' => $generation->message,
-            'preview_url' => $generation->status === 'completed' && $path
-                ? route('room-images.preview', [$roomImage, $product])
-                : null,
         ]);
     }
 }
