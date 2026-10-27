@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\EnsureRole;
 use App\Http\Middleware\EnsureAccountIsActive;
+use App\Http\Middleware\ForceHttps;
 use App\Support\SafeRedirectTarget;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -15,7 +16,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        $middleware->web(append: [EnsureAccountIsActive::class]);
+        $middleware->trustProxies(at: array_values(array_filter(array_map('trim', explode(',', (string) env('TRUSTED_PROXIES', ''))))));
+        $middleware->web(append: [EnsureAccountIsActive::class, ForceHttps::class]);
 
         $middleware->alias([
             'role' => EnsureRole::class,

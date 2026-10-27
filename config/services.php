@@ -43,4 +43,8 @@ return [
         'image_fallback_model' => env('GEMINI_IMAGE_FALLBACK_MODEL', 'gemini-2.5-flash-image'),
     ],
 
+    'feedback' => [
+        'admin_email' => env('ADMIN_FEEDBACK_EMAIL'),
+    ],
+
 ];

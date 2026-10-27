@@ -52,6 +52,22 @@ class ProductionReadiness
             : 'Mailer '.$mailer.' is missing credentials or still has template placeholders.';
         $this->add($checks, 'Email delivery', $mailReady, $mailDetail);
 
+        $feedbackRecipient = (string) config('services.feedback.admin_email');
+        $feedbackReady = filter_var($feedbackRecipient, FILTER_VALIDATE_EMAIL) !== false && ! $this->isPlaceholder($feedbackRecipient);
+        $this->add($checks, 'Feedback admin recipient', $feedbackReady, $feedbackReady ? 'A delivery address is configured.' : 'ADMIN_FEEDBACK_EMAIL must contain a real admin mailbox.');
+
+        $geminiConfigured = filled(config('services.gemini.key'));
+        $this->add($checks, 'Gemini fallback behavior', true, $geminiConfigured ? 'Gemini is configured; failed requests use local guidance.' : 'GEMINI_API_KEY is empty; local room estimates and chat guidance remain available.');
+
+        $filesystemDisk = (string) config('filesystems.default');
+        $awsReady = $filesystemDisk !== 's3'
+            || (! $this->isPlaceholder(config('filesystems.disks.s3.bucket'))
+                && ! $this->isPlaceholder(config('filesystems.disks.s3.key'))
+                && ! $this->isPlaceholder(config('filesystems.disks.s3.secret')));
+        $this->add($checks, 'Object storage configuration', $awsReady, $filesystemDisk === 's3'
+            ? ($awsReady ? 'S3 settings are present.' : 'AWS_BUCKET, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY are required for S3 storage.')
+            : 'The local private disk is selected; AWS_BUCKET is not required.');
+
         $queue = (string) config('queue.default');
         $this->add($checks, 'Asynchronous queue configured', ! in_array($queue, ['sync', 'null'], true), 'Configured queue: '.$queue.'. This does not verify a worker is running; confirm a worker is supervised on the host.');
 
