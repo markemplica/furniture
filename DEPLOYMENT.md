@@ -1,4 +1,4 @@
-# FurniCraft beta deployment
+# FurniCraft production deployment
 
 ## Server requirements
 
@@ -10,11 +10,11 @@
 ## Environment setup
 
 1. Deploy the repository to a private application directory and point the web server document root to `public/`.
-2. Install production dependencies and create the deployment environment from the credential-free template. Keep secrets in the host's secret manager; never commit `.env`.
+2. Install production dependencies and create the deployment environment from the production-oriented, credential-free template. Keep secrets in the host's secret manager; never commit `.env`.
 
    ```sh
    composer install --no-dev --optimize-autoloader
-   cp .env.beta.example .env
+   cp .env.example .env
    ```
 
 3. Set `APP_ENV=production`, `APP_DEBUG=false`, the real HTTPS `APP_URL`, a generated stable `APP_KEY`, database credentials, mail-provider credentials, `ADMIN_FEEDBACK_EMAIL`, and `QUEUE_CONNECTION=database`. If TLS terminates at a reverse proxy, set `TRUSTED_PROXIES` to its exact IP/CIDR values. Keep `SESSION_ENCRYPT=true`, `SESSION_SECURE_COOKIE=true`, `SESSION_HTTP_ONLY=true`, and `SESSION_SAME_SITE=lax`.
@@ -29,8 +29,9 @@
    php artisan storage:link
    ```
 
-6. Create the first owner account interactively with `php artisan furnicraft:admin:create`. For optional beta test accounts, set `BETA_SEED_ACCOUNTS=true` and the `BETA_ADMIN_*` and `BETA_CUSTOMER_*` variables through the secret manager, then run `php artisan db:seed --class=BetaTestAccountsSeeder --force`. It does not overwrite existing accounts. Staff-role accounts are not supported.
-7. Run `php artisan system:readiness`, check `/health` and `/up`, then verify real email delivery, queue processing, HTTPS, private room-image access, and the scheduler before inviting testers.
+6. Create the first owner account interactively with `php artisan furnicraft:admin:create`. Do not create test or demo accounts in production. `DatabaseSeeder` and `BetaTestAccountsSeeder` are not for production use. Add and verify the real furniture catalog through the admin interface before opening public traffic. Staff-role accounts are not supported.
+7. Have the privacy notice and customer-facing reservation terms reviewed and approved for the shop's real data practices. Confirm the privacy contact and retention rules before launch.
+8. Run `php artisan system:readiness`, check `/health` and `/up`, then verify real email delivery, queue processing, HTTPS, private room-image access, and the scheduler before opening public traffic.
 
 ## Queue and scheduler
 
@@ -50,10 +51,10 @@ Schedule `php artisan schedule:run` every minute using the host scheduler. Keep 
 - Test restores in isolated staging. Restore the database and private files, apply migrations, then check authentication, catalog, reservations, photo privacy, queue processing, and outgoing mail. Never use the live database as a restore test target.
 - Record each restore drill's date, duration, operator, and issues. A backup is not verified until the restore succeeds.
 
-## Monitoring and beta support
+## Production monitoring
 
-Laravel writes daily rotating logs by default (`LOG_CHANNEL=daily`, 14 days). Review `storage/logs` and failed jobs. Add an exception tracker such as Sentry or Flare before expanding the beta; neither is currently configured. `/health` checks database, cache, and queue availability, but does not replace external uptime monitoring or worker/scheduler supervision.
+Laravel writes daily rotating logs by default (`LOG_CHANNEL=daily`, 14 days). Review `storage/logs` and failed jobs. Configure an exception tracker such as Sentry or Flare before launch; neither is currently configured. `/health` checks database, cache, and queue availability, but does not replace external uptime monitoring or worker/scheduler supervision.
 
 ## Rollback
 
-Keep the previous release available and roll application code back through the deployment process. Before any down migration or destructive data operation, take a verified backup and review the migration's impact. Do not run `migrate:fresh` or rewrite repository history on a beta database.
+Keep the previous release available and roll application code back through the deployment process. Before any down migration or destructive data operation, take a verified backup and review the migration's impact. Do not run `migrate:fresh` or rewrite repository history on a production database.

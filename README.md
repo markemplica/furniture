@@ -12,7 +12,7 @@ FurniCraft is a Laravel web application for Lance Furniture Shop. It gives authe
 - The customer-facing room upload is photo-first and does not ask for room dimensions. Gemini may estimate width and depth; local planning guidance is used when AI is not authorized or unavailable. Legacy optional dimensions remain supported by the backend.
 - Gemini room analysis and furnished-room image generation run in the database queue; the preview page polls for completion and continues to show the local 2D overlay while image generation runs
 - Reservation requests only; no payment, delivery tracking, inventory, or financial management
-- Queued email verification, password-reset, reservation-confirmation, and beta feedback email
+- Queued email verification, password-reset, reservation-confirmation, and feedback email
 - Password-reset codes stored as hashes, valid for 15 minutes, single-use, and request-rate-limited
 - Responsive Bootstrap interface for phone and desktop browsers
 
@@ -66,17 +66,20 @@ php artisan queue:work --tries=3 --timeout=540
 php artisan schedule:work
 ```
 
-The development server is available at `http://127.0.0.1:8000`. `DatabaseSeeder` seeds demo furniture only and refuses to run in production. It does not create demo accounts. For an explicitly configured beta deployment, set `BETA_SEED_ACCOUNTS=true` and populate `BETA_ADMIN_NAME`, `BETA_ADMIN_EMAIL`, `BETA_ADMIN_PASSWORD`, `BETA_CUSTOMER_NAME`, `BETA_CUSTOMER_EMAIL`, and `BETA_CUSTOMER_PASSWORD` through the host's secret manager, then run `php artisan db:seed --class=BetaTestAccountsSeeder --force`. The seeder does not print passwords or replace an existing account. Only Customer and Administrator roles exist; staff accounts are not supported by authorization or workflow code.
+The development server is available at `http://127.0.0.1:8000`. `DatabaseSeeder` seeds demo furniture only and refuses to run in production. It does not create accounts. `BetaTestAccountsSeeder` is for local or isolated staging only and refuses to run in production. Create the first production owner account interactively with `php artisan furnicraft:admin:create`; never publish test credentials. Only Customer and Administrator roles exist; staff accounts are not supported by authorization or workflow code.
 ## Production deployment and recovery
 
-FurniCraft is currently a locally run prototype. No hosting target, public HTTPS URL, real mail provider, backup destination, restore drill, or supervised production services have been verified. Do not describe the system as production deployed until these steps are completed on the target host.
+Release status: the application code and deployment guidance are prepared for a production release, but no production host, public HTTPS URL, live mail delivery, backup destination, restore drill, or supervised production services have been verified. Complete the release checks below on the actual host before opening public traffic.
 
-## Beta test preflight
+## Public production release
 
-- Use an isolated beta database and test accounts; do not expose local development settings to testers. Start from the credential-free [.env.beta.example](.env.beta.example) and configure deployment secrets through the host's secret-management process. Local startup scripts bind only to `127.0.0.1`; shared beta hosting requires `APP_DEBUG=false` and HTTPS.
-- Decide whether beta should exercise room-preview v2. If enabled, start with `ROOM_PREVIEW_V2_ROLLOUT_PERCENT=5` or less, verify GD in both web and worker PHP runtimes, inspect fallbacks, then increase gradually. Use the beta template for deployment settings rather than copying a developer's environment values.
-- Run `php artisan system:readiness`, then independently verify a live queue worker, scheduler, real email delivery, Gemini access, and external `/up` and TLS checks. The readiness command cannot prove those services are running.
-- Follow the cross-browser, keyboard, interrupted-network, Gemini-outage, concurrent-reservation, and restore-drill checks in [browser-acceptance.md](docs/browser-acceptance.md) before inviting representative customers.
+- Use a dedicated production database and host. Start from the production-oriented [.env.example](.env.example), replace every placeholder through the host's secret manager, and never copy a developer's `.env` or publish test credentials.
+- Set the real HTTPS `APP_URL`, `APP_ENV=production`, `APP_DEBUG=false`, secure session settings, least-privilege database credentials, real mail credentials, and `ADMIN_FEEDBACK_EMAIL`. Leave optional AI disabled until consent, privacy language, quotas, and billing are approved.
+- Import and verify the shop's approved product catalog and images through the admin interface; sample/demo seed data is never loaded into production.
+- Have the privacy notice and reservation terms reviewed for the real deployment, including the shop's privacy contact, data handling, and retention practices.
+- Keep room-preview v2 disabled until its image runtime, fallback behavior, privacy controls, and production resource usage have been explicitly reviewed.
+- Run `php artisan system:readiness`, then independently verify a supervised queue worker, scheduler, real email delivery, external `/health` and `/up`, TLS, and private room-image access. The readiness command cannot prove those services are running.
+- Follow the cross-browser, keyboard, interrupted-network, AI-outage, concurrent-reservation, and restore-drill checks in [browser-acceptance.md](docs/browser-acceptance.md) before opening public traffic.
 
 ### Host configuration
 
@@ -118,7 +121,7 @@ The model name is configurable so it can be changed without modifying applicatio
 
 ## Email configuration
 
-Email verification, reservation-confirmation notifications, and beta feedback email use Laravel's queue. Password-reset email is sent synchronously by its controller. Configure a real mail provider and `ADMIN_FEEDBACK_EMAIL` for deployment:
+Email verification, password-reset, reservation-confirmation notifications, and feedback email use Laravel's queue. Configure a real mail provider and `ADMIN_FEEDBACK_EMAIL` for deployment:
 
 ```env
 MAIL_MAILER=smtp
@@ -155,7 +158,7 @@ The feature suite verifies public and protected access, required preferences and
 - The retention task is scheduled in Laravel. Run `php artisan schedule:work` locally, or configure the standard Laravel scheduler cron entry in production; also run `php artisan room-images:secure-legacy` once after upgrading older installations.
 - The privacy notice describes the application’s controls and external Gemini transfer. It is not a certification or legal compliance determination.
 
-## Known beta limitations
+## Known release limitations
 
 - A single room photo only supports approximate scale and placement; confirm physical measurements with the shop before reserving.
 - Gemini is optional. Without `GEMINI_API_KEY`, room analysis and chat use local guidance; provider outages also fall back locally.
