@@ -2,18 +2,23 @@
 
 namespace Tests\Feature;
 
+use App\Models\FurnitureProduct;
 use App\Services\ProductionReadiness;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class ProductionReadinessTest extends TestCase
 {
-    public function test_beta_template_placeholders_are_not_reported_as_ready(): void
+    use RefreshDatabase;
+
+    public function test_production_template_placeholders_are_not_reported_as_ready(): void
     {
+        $this->activeProduct();
         config([
-            'app.url' => 'https://replace-with-beta-domain.example',
+            'app.url' => 'https://your-production-domain.example',
             'mail.default' => 'smtp',
-            'mail.mailers.smtp.host' => 'replace-with-beta-smtp-host',
-            'mail.from.address' => 'noreply@replace-with-beta-domain.example',
+            'mail.mailers.smtp.host' => 'replace-with-smtp-host',
+            'mail.from.address' => 'noreply@your-production-domain.example',
             'services.feedback.admin_email' => '',
         ]);
 
@@ -21,11 +26,12 @@ class ProductionReadinessTest extends TestCase
 
         $this->assertFalse($checks['HTTPS application URL']['ok']);
         $this->assertFalse($checks['Email delivery']['ok']);
-        $this->assertStringContainsString('real beta hostname', $checks['HTTPS application URL']['detail']);
+        $this->assertStringContainsString('real production hostname', $checks['HTTPS application URL']['detail']);
     }
 
     public function test_concrete_https_and_smtp_settings_pass_configuration_checks(): void
     {
+        $this->activeProduct();
         config([
             'app.url' => 'https://beta.lancefurniture.test',
             'mail.default' => 'smtp',
@@ -37,8 +43,24 @@ class ProductionReadinessTest extends TestCase
         $checks = collect(app(ProductionReadiness::class)->inspect()['checks'])->keyBy('name');
 
         $this->assertTrue($checks['HTTPS application URL']['ok']);
+        $this->assertTrue($checks['Active production catalog']['ok']);
         $this->assertTrue($checks['Email delivery']['ok']);
         $this->assertTrue($checks['Feedback admin recipient']['ok']);
         $this->assertStringContainsString('does not verify a real email', $checks['Email delivery']['detail']);
+    }
+
+    private function activeProduct(): void
+    {
+        FurnitureProduct::create([
+            'name' => 'Production Readiness Product',
+            'slug' => 'production-readiness-product',
+            'category' => 'Chair',
+            'description' => 'Readiness fixture.',
+            'wood_type' => 'Gmelina',
+            'varnish_finish' => 'Natural',
+            'style' => 'Modern',
+            'price' => 1000,
+            'status' => 'active',
+        ]);
     }
 }

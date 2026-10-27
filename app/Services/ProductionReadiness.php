@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\FurnitureProduct;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Encryption\Encrypter;
@@ -18,7 +19,7 @@ class ProductionReadiness
         $urlHost = (string) parse_url($url, PHP_URL_HOST);
         $httpsReady = strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https'
             && ! $this->isPlaceholder($urlHost);
-        $urlDetail = $httpsReady ? $url : 'APP_URL must use HTTPS and a real beta hostname; template placeholders are not ready.';
+        $urlDetail = $httpsReady ? $url : 'APP_URL must use HTTPS and the real production hostname; template placeholders are not ready.';
         $this->add($checks, 'HTTPS application URL', $httpsReady, $urlDetail);
 
         $database = config('database.default');
@@ -32,6 +33,15 @@ class ProductionReadiness
             $databaseDetail .= ' Database connection failed: '.$exception::class.'.';
         }
         $this->add($checks, 'Production database', $databaseReady, $databaseDetail);
+
+        try {
+            $activeProducts = FurnitureProduct::query()->where('status', 'active')->count();
+        } catch (\Throwable) {
+            $activeProducts = 0;
+        }
+        $this->add($checks, 'Active production catalog', $activeProducts > 0, $activeProducts > 0
+            ? $activeProducts.' active catalog items are available.'
+            : 'Add and verify the production furniture catalog before opening public traffic.');
 
         $mailer = (string) config('mail.default');
         $mailReady = in_array($mailer, ['smtp', 'ses', 'postmark', 'resend'], true);
