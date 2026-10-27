@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\FurnitureProduct;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
+use Database\Seeders\BetaTestAccountsSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use RuntimeException;
 use Tests\TestCase;
@@ -67,5 +68,19 @@ class SeederAccountSafetyTest extends TestCase
         $this->assertTrue($guardTriggered, 'Expected the production guard to stop seeding.');
         $this->assertSame(0, User::count());
         $this->assertSame(0, FurnitureProduct::count());
+    }
+
+    public function test_test_account_seeder_refuses_to_run_in_production(): void
+    {
+        $this->app->detectEnvironment(fn () => 'production');
+
+        try {
+            app(BetaTestAccountsSeeder::class)->run();
+            $this->fail('Production must never receive test accounts.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('never be created in production', $exception->getMessage());
+        }
+
+        $this->assertSame(0, User::count());
     }
 }

@@ -13,6 +13,10 @@ class BetaTestAccountsSeeder extends Seeder
 {
     public function run(): void
     {
+        if (app()->isProduction()) {
+            throw new RuntimeException('Test accounts must never be created in production.');
+        }
+
         if (! filter_var(env('BETA_SEED_ACCOUNTS', false), FILTER_VALIDATE_BOOL)) {
             throw new RuntimeException('Set BETA_SEED_ACCOUNTS=true to explicitly create configured beta accounts.');
         }
