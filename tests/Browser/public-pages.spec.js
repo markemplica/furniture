@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
     }));
 });
 
-for (const path of ['/', '/login']) {
+for (const path of ['/', '/login', '/feedback']) {
     test(`${path} loads without horizontal overflow or unnamed controls`, async ({ page }) => {
         const errors = [];
         page.on('pageerror', (error) => errors.push(error.message));
