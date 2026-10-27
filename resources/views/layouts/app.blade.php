@@ -11,6 +11,7 @@
 </head>
 <body class="@guest guest-body @endguest @yield('body_class')">
 <a class="skip-link" href="#main-content">Skip to main content</a>
+<div class="beta-notice" role="note"><span class="beta-tag">BETA</span><span>FurniCraft is in a limited beta. Please confirm reservation details with Lance Furniture Shop.</span></div>
 @auth
 <nav class="navbar navbar-expand-lg navbar-light fc-navbar sticky-top" aria-label="Main navigation">
     <div class="container-xl">
@@ -91,6 +92,7 @@
     <div class="container-xl site-footer-inner">
         <div><span class="footer-brand">FurniCraft</span><small>Intelligent furniture planning for Lance Furniture Shop.</small></div>
         <span>Designed around real rooms, local craftsmanship, and informed choices.</span>
+                <a href="{{ route('feedback.create') }}">Send feedback / report a bug</a>
     </div>
 </footer>
 @endif

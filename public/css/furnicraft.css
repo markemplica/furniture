@@ -38,6 +38,10 @@ body {
 
 ::selection { color: #fff; background: var(--forest-2); }
 
+.beta-notice { display: flex; align-items: center; justify-content: center; gap: .65rem; padding: .45rem 1rem; color: var(--ink-soft); background: #efe4d8; border-bottom: 1px solid var(--line); font-size: .82rem; text-align: center; }
+.beta-tag { display: inline-flex; align-items: center; min-height: 1.35rem; padding: 0 .45rem; color: #fff; background: var(--forest); border-radius: 4px; font-size: .68rem; font-weight: 750; letter-spacing: .06em; }
+@media (max-width: 575.98px) { .beta-notice { align-items: flex-start; text-align: left; } }
+
 h1, h2, h3, h4, h5, h6 {
     color: var(--ink);
     font-family: inherit;

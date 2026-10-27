@@ -8,6 +8,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CatalogController;
 use App\Http\Controllers\ChatController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\HealthController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\PreferenceController;
 use App\Http\Controllers\ProfileController;
@@ -21,6 +22,9 @@ use App\Http\Controllers\RoomPhotoController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [DashboardController::class, 'index'])->name('home');
+Route::get('/health', HealthController::class)->name('health');
+Route::get('/feedback', [App\Http\Controllers\FeedbackController::class, 'create'])->name('feedback.create');
+Route::post('/feedback', [App\Http\Controllers\FeedbackController::class, 'store'])->middleware('throttle:3,1')->name('feedback.store');
 Route::view('/how-it-works', 'how-it-works')->name('how-it-works');
 Route::view('/privacy-policy', 'privacy-policy')->name('privacy-policy');
 Route::get('/catalog', [CatalogController::class, 'index'])->name('catalog.index');
