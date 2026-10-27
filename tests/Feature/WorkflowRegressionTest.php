@@ -19,11 +19,13 @@ use App\Services\GeminiService;
 use App\Services\PrivacyAudit;
 use App\Services\RecommendationService;
 use App\Services\RoomPhotoService;
+use App\Http\Requests\Admin\ReservationUpdateRequest;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -145,9 +147,12 @@ class WorkflowRegressionTest extends TestCase
         $customer = User::factory()->create();
         $reservation = $this->reservation($customer);
         Reservation::whereKey($reservation->id)->update(['status' => 'cancelled']);
-        $request = Request::create('/', 'PATCH', ['status' => 'confirmed', 'outcome' => 'completed']);
+        $request = ReservationUpdateRequest::create('/', 'PATCH', ['status' => 'confirmed', 'outcome' => 'completed']);
         $admin = User::factory()->create(['role' => 'admin']);
         $request->setUserResolver(fn () => $admin);
+        $request->setContainer(app());
+        $request->setRedirector(app('redirect'));
+        $request->setValidator(Validator::make($request->all(), $request->rules()));
         try {
             app(AdminReservationController::class)->update($request, $reservation);
             $this->fail('The current cancelled state must win over a stale route model.');
@@ -312,7 +317,7 @@ class WorkflowRegressionTest extends TestCase
         $room = $this->room(User::factory()->create());
         $photos = $this->mock(RoomPhotoService::class);
         $photos->shouldReceive('exists')->once()->andReturnTrue();
-        $gemini = $this->partialMock(GeminiService::class);
+        $gemini = $this->mock(GeminiService::class);
         $gemini->shouldReceive('isConfigured')->andReturnTrue();
         $gemini->shouldReceive('analyzeRoom')->once()->andReturnUsing(function () use ($room) {
             $room->update(['analysis' => [
@@ -336,8 +341,9 @@ class WorkflowRegressionTest extends TestCase
         $photos = $this->mock(RoomPhotoService::class);
         $photos->shouldReceive('exists')->andReturnTrue();
         $photos->shouldReceive('deleteGeneratedPreviews')->once();
-        $gemini = $this->partialMock(GeminiService::class);
+        $gemini = $this->mock(GeminiService::class);
         $gemini->shouldReceive('isConfigured')->andReturnTrue();
+        $gemini->shouldReceive('roomFallback')->andReturn(['summary' => 'Local estimate', 'gemini_used' => false]);
         $gemini->shouldReceive('analyzeRoom')->once()->andReturnUsing(function () use ($customer, $room) {
             $this->actingAs($customer)->delete(route('room.ai-consent.revoke', $room))->assertRedirect();
             return ['summary' => 'Stale AI response', 'estimated_width_m' => 10, 'gemini_used' => true];
@@ -360,8 +366,9 @@ class WorkflowRegressionTest extends TestCase
         $photos = $this->mock(RoomPhotoService::class);
         $photos->shouldReceive('exists')->andReturnTrue();
         $photos->shouldReceive('deleteGeneratedPreviews')->once();
-        $gemini = $this->partialMock(GeminiService::class);
+        $gemini = $this->mock(GeminiService::class);
         $gemini->shouldReceive('isConfigured')->andReturnTrue();
+        $gemini->shouldReceive('roomFallback')->andReturn(['summary' => 'Local estimate', 'gemini_used' => false]);
         $gemini->shouldReceive('analyzeRoom')->once()->andReturnUsing(function () use ($customer, $room) {
             $this->actingAs($customer)->delete(route('room.ai-consent.revoke', $room))->assertRedirect();
             throw new \RuntimeException('Provider unavailable');
@@ -423,7 +430,8 @@ class WorkflowRegressionTest extends TestCase
         $photos = $this->mock(RoomPhotoService::class);
         $photos->shouldReceive('deleteGeneratedPreviews')->once();
         $photos->shouldNotReceive('storeGenerated');
-        $gemini = $this->partialMock(GeminiService::class);
+        $gemini = $this->mock(GeminiService::class);
+        $gemini->shouldReceive('roomFallback')->andReturn(['summary' => 'Local estimate', 'gemini_used' => false]);
         $gemini->shouldReceive('furnishRoom')->once()->andReturnUsing(function () use ($customer, $room) {
             $this->actingAs($customer)->delete(route('room.ai-consent.revoke', $room))->assertRedirect();
             return ['used' => true, 'bytes' => 'stale mock image', 'mime_type' => 'image/png'];

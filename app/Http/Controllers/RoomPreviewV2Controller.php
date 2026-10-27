@@ -6,20 +6,21 @@ use App\Jobs\GenerateRoomPreviewV2;
 use App\Models\FurnitureProduct;
 use App\Models\RoomImage;
 use App\Models\RoomPreviewGeneration;
+use App\Http\Requests\RoomPreviewV2StoreRequest;
 use App\Services\RoomPhotoService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\URL;
 
 class RoomPreviewV2Controller extends Controller
 {
-    public function store(Request $request, RoomImage $roomImage, RoomPhotoService $photos)
+    public function store(RoomPreviewV2StoreRequest $request, RoomImage $roomImage, RoomPhotoService $photos)
     {
         abort_unless($roomImage->user_id === $request->user()->id, 404);
         abort_unless($this->enabledFor($request->user()->id), 404, 'This preview pipeline is not enabled.');
 
         $unexpected = array_diff(array_keys($request->except('_token')), ['furniture_id', 'retry']);
         abort_if($unexpected !== [], 422, 'Only furniture_id and retry are accepted.');
-        $data = $request->validate(['furniture_id' => ['required', 'integer', 'min:1'], 'retry' => ['sometimes', 'boolean']]);
+        $data = $request->validated();
         $product = FurnitureProduct::query()->findOrFail((int) $data['furniture_id']);
         abort_unless($product->status === 'active', 422, 'This catalog item is inactive.');
         abort_unless($photos->exists($roomImage->image_path), 422, 'The room photo is unavailable.');

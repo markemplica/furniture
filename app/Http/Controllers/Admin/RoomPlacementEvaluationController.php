@@ -5,8 +5,8 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\RoomImage;
 use App\Models\RoomPlacementEvaluation;
+use App\Http\Requests\Admin\RoomPlacementEvaluationRequest;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
 
 class RoomPlacementEvaluationController extends Controller
 {
@@ -35,14 +35,10 @@ class RoomPlacementEvaluationController extends Controller
         return view('admin.room-placement-evaluation', compact('rooms', 'evaluations', 'metrics', 'sourceCounts'));
     }
 
-    public function store(Request $request, RoomImage $roomImage)
+    public function store(RoomPlacementEvaluationRequest $request, RoomImage $roomImage)
     {
         abort_unless($roomImage->analyzed_at, 404);
-        $rules = ['notes' => ['nullable', 'string', 'max:2000']];
-        foreach (self::DIMENSIONS as $dimension) {
-            $rules[$dimension] = ['required', Rule::in(['yes', 'no', 'not_applicable'])];
-        }
-        $data = $request->validate($rules);
+        $data = $request->validated();
         $assessment = ['room_image_id' => $roomImage->id, 'evaluator_id' => $request->user()->id, 'notes' => $data['notes'] ?? null];
         foreach (self::DIMENSIONS as $dimension) {
             $assessment[$dimension] = $data[$dimension] === 'not_applicable' ? null : $data[$dimension] === 'yes';

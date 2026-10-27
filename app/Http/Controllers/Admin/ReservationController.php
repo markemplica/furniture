@@ -5,10 +5,10 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\NotificationLog;
 use App\Models\Reservation;
+use App\Http\Requests\Admin\ReservationUpdateRequest;
 use App\Notifications\ReservationConfirmedNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
 
 class ReservationController extends Controller
 {
@@ -18,15 +18,9 @@ class ReservationController extends Controller
         return view('admin.reservations.index', compact('reservations'));
     }
 
-    public function update(Request $request, Reservation $reservation)
+    public function update(ReservationUpdateRequest $request, Reservation $reservation)
     {
-        $data = $request->validate([
-            'status' => ['required', Rule::in(['pending', 'confirmed', 'declined', 'cancelled'])],
-            'notes' => ['nullable', 'string', 'max:1000'],
-            'decline_reason' => ['nullable', 'required_if:status,declined', 'string', 'max:1000'],
-            'item_ready' => ['nullable', 'boolean'],
-            'outcome' => ['nullable', Rule::in(['completed', 'no_show'])],
-        ]);
+        $data = $request->validated();
         [$reservation, $log] = DB::transaction(function () use ($request, $reservation, $data) {
             $log = null;
             $reservation = Reservation::whereKey($reservation->id)->lockForUpdate()->firstOrFail();

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\SystemUsabilityResponse;
+use App\Http\Requests\UsabilitySurveyRequest;
 use Illuminate\Http\Request;
 
 class SystemUsabilityController extends Controller
@@ -14,13 +15,9 @@ class SystemUsabilityController extends Controller
         return view('usability.edit', compact('response'));
     }
 
-    public function store(Request $request)
+    public function store(UsabilitySurveyRequest $request)
     {
-        $rules = [];
-        for ($question = 1; $question <= 10; $question++) {
-            $rules['q'.$question] = ['required', 'integer', 'between:1,5'];
-        }
-        $data = $request->validate($rules);
+        $data = $request->validated();
         $sum = 0;
         $answers = [];
         for ($questionNumber = 1; $questionNumber <= 10; $questionNumber++) {

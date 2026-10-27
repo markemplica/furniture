@@ -16,7 +16,7 @@ class AccountDeactivationTest extends TestCase
         $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
         $this->actingAs($customer)->get('/profile')->assertOk();
         $this->actingAs($admin)->patch(route('admin.customers.update', $customer), ['is_active' => false])->assertRedirect();
-        $this->actingAs($customer)->withSession(['private_marker' => 'old-session'])
+        $this->actingAs($customer->fresh())->withSession(['private_marker' => 'old-session'])
             ->get('/profile')->assertRedirect(route('login'))->assertSessionMissing('private_marker');
         $this->assertGuest();
     }

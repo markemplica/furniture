@@ -3,13 +3,15 @@
 namespace App\Http\Controllers;
 
 use App\Models\NotificationLog;
+use App\Http\Requests\PasswordResetCodeRequest;
+use App\Http\Requests\PasswordResetEmailRequest;
+use App\Http\Requests\PasswordResetRequest as PasswordResetFormRequest;
 use App\Models\PasswordResetCode;
 use App\Models\User;
 use App\Notifications\PasswordResetCodeNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rules\Password;
 use Throwable;
 
 class PasswordResetController extends Controller
@@ -41,9 +43,9 @@ class PasswordResetController extends Controller
         ]);
     }
 
-    public function sendCode(Request $request)
+    public function sendCode(PasswordResetEmailRequest $request)
     {
-        $data = $request->validate(['email' => ['required', 'email']]);
+        $data = $request->validated();
         $email = strtolower($data['email']);
         $request->session()->put('reset_email', $email);
         $request->session()->forget('password_reset_verified_email');
@@ -69,9 +71,9 @@ class PasswordResetController extends Controller
             ->with('success', 'The reset code was sent. Check your inbox and spam folder.');
     }
 
-    public function resendCode(Request $request)
+    public function resendCode(PasswordResetEmailRequest $request)
     {
-        $data = $request->validate(['email' => ['required', 'email']]);
+        $data = $request->validated();
         $email = strtolower($data['email']);
         $sessionEmail = strtolower((string) $request->session()->get('reset_email', ''));
 
@@ -103,12 +105,9 @@ class PasswordResetController extends Controller
             ->with('success', 'A new reset code was sent. Check your inbox and spam folder.');
     }
 
-    public function verifyCode(Request $request)
+    public function verifyCode(PasswordResetCodeRequest $request)
     {
-        $data = $request->validate([
-            'email' => ['required', 'email'],
-            'code' => ['required', 'digits:6'],
-        ]);
+        $data = $request->validated();
         $email = strtolower($data['email']);
         $sessionEmail = strtolower((string) $request->session()->get('reset_email', ''));
         $record = PasswordResetCode::where('email', $email)
@@ -127,9 +126,9 @@ class PasswordResetController extends Controller
         return redirect()->route('password.reset')->with('success', 'Code verified. You can now choose a new password.');
     }
 
-    public function reset(Request $request)
+    public function reset(PasswordResetFormRequest $request)
     {
-        $data = $request->validate(['email' => ['required', 'email'], 'password' => ['required', 'confirmed', Password::defaults()]]);
+        $data = $request->validated();
         $email = strtolower($data['email']);
         $verifiedEmail = strtolower((string) $request->session()->get('password_reset_verified_email', ''));
         $record = PasswordResetCode::where('email', $email)->whereNull('used_at')->where('expires_at', '>', now())->latest()->first();

@@ -4,11 +4,11 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ProductRequest;
+use App\Http\Requests\Admin\ProductStatusRequest;
 use App\Models\FurnitureProduct;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
 
 class ProductController extends Controller
 {
@@ -59,9 +59,9 @@ class ProductController extends Controller
         return redirect()->route('admin.products.index')->with('success', 'Furniture item updated.');
     }
 
-    public function updateStatus(Request $request, FurnitureProduct $product)
+    public function updateStatus(ProductStatusRequest $request, FurnitureProduct $product)
     {
-        $data = $request->validate(['status' => ['required', Rule::in(['active', 'inactive'])]]);
+        $data = $request->validated();
         $product->update(['status' => $data['status']]);
 
         return back()->with('success', 'Furniture status updated to '.$data['status'].'.');

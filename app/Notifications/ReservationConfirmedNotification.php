@@ -12,6 +12,14 @@ class ReservationConfirmedNotification extends Notification implements ShouldQue
 {
     use Queueable;
 
+    public int $tries = 3;
+    public int $timeout = 60;
+
+    public function backoff(): array
+    {
+        return [30, 120, 300];
+    }
+
     public const SUBJECT = 'Reservation request approved - confirm item readiness';
 
     public function __construct(public Reservation $reservation) {}

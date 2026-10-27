@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\RoomPreviewGeneration;
 use App\Http\Requests\RoomStoreRequest;
 use App\Jobs\AnalyzeRoomImage;
 use App\Models\RoomImage;

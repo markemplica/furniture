@@ -11,6 +11,14 @@ class EmailVerificationCodeNotification extends Notification implements ShouldQu
 {
     use Queueable;
 
+    public int $tries = 3;
+    public int $timeout = 60;
+
+    public function backoff(): array
+    {
+        return [30, 120, 300];
+    }
+
     public function __construct(public string $code)
     {
         $this->afterCommit();

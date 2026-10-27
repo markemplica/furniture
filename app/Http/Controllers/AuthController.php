@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\LoginRequest;
 use App\Http\Requests\RegisterRequest;
+use App\Http\Requests\ResendVerificationRequest;
 use App\Http\Requests\VerifyEmailRequest;
 use App\Models\NotificationLog;
 use App\Models\RegistrationVerificationCode;
@@ -148,9 +149,9 @@ class AuthController extends Controller
         return redirect()->route('catalog.index')->with('success', 'Your email is verified and your FurniCraft account is ready.');
     }
 
-    public function resendVerificationCode(Request $request)
+    public function resendVerificationCode(ResendVerificationRequest $request)
     {
-        $data = $request->validate(['email' => ['required', 'email']]);
+        $data = $request->validated();
         $email = Str::lower(trim($data['email']));
         $user = User::where('email', $email)->whereNull('email_verified_at')->where('is_active', false)->first();
 

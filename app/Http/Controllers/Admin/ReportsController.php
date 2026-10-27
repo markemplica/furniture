@@ -7,9 +7,9 @@ use App\Models\FurnitureProduct;
 use App\Models\Recommendation;
 use App\Models\Reservation;
 use App\Models\User;
+use App\Http\Requests\Admin\ReportFiltersRequest;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
@@ -17,9 +17,9 @@ class ReportsController extends Controller
 {
 
 
-    public function index(Request $request)
+    public function index(ReportFiltersRequest $request)
     {
-        $filters = $this->validatedFilters($request);
+        $filters = $request->validated();
         $report = $filters['report'] ?? 'reservations';
         $query = $this->reportQuery($report, $filters);
         $recordCount = (clone $query)->count();
@@ -29,9 +29,9 @@ class ReportsController extends Controller
         return view('admin.reports.index', compact('report', 'filters', 'rows', 'recordCount', 'branchStats'));
     }
 
-    public function export(Request $request)
+    public function export(ReportFiltersRequest $request)
     {
-        $filters = $this->validatedFilters($request);
+        $filters = $request->validated();
         $report = $filters['report'] ?? 'reservations';
         $filename = 'furnicraft-'.$report.'-report-'.now()->format('Ymd-His').'.csv';
         [$headers, $fields] = $this->columns($report);
@@ -65,17 +65,6 @@ class ReportsController extends Controller
             });
             fclose($stream);
         }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
-    }
-
-    private function validatedFilters(Request $request): array
-    {
-        return $request->validate([
-            'report' => ['nullable', Rule::in(['reservations', 'recommendations', 'customers', 'furniture'])],
-            'format' => ['nullable', Rule::in(['csv', 'pdf'])],
-            'q' => ['nullable', 'string', 'max:200'],
-            'date_from' => ['nullable', 'date'],
-            'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
-        ]);
     }
 
     private function reportQuery(string $report, array $filters): Builder

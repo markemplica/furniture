@@ -41,11 +41,11 @@ class ExampleTest extends TestCase
         $preference = $user->preference()->create(['furniture_type' => 'Table', 'budget_min' => 0, 'budget_max' => 30000, 'wood_type' => 'Gmelina', 'style' => 'Modern', 'varnish_finish' => 'Natural']);
         $recommendation = app(\App\Services\RecommendationService::class)->generate($user, $preference, $room, 'Table');
         $this->assertCount(2, $recommendation->items);
-        $this->actingAs($user)->post(route('recommendations.chat', $recommendation), ['message' => 'below 20'])->assertRedirect(route('recommendations.show', $recommendation));
+        $this->actingAs($user)->from(route('recommendations.show', $recommendation))->post(route('recommendations.chat', $recommendation), ['message' => 'below 20k'])->assertRedirect(route('recommendations.show', $recommendation));
         $this->assertSame([$cheap->id], $recommendation->items()->pluck('furniture_product_id')->all());
         $this->assertSame('19999.99', $preference->fresh()->budget_max);
         $this->assertSame('Gmelina', $preference->fresh()->wood_type);
-        $this->post(route('recommendations.chat', $recommendation), ['message' => 'below 10000'])->assertRedirect();
+        $this->post(route('recommendations.chat', $recommendation), ['message' => 'below PHP 10000'])->assertRedirect();
         $this->assertSame(0, $recommendation->items()->count());
         $this->get(route('recommendations.show', $recommendation))->assertOk()->assertSee('No exact matches')->assertSee('Ask FurniCraft')
             ->assertSee('Closest suggestions')->assertSee('above your maximum budget');
@@ -166,7 +166,7 @@ class ExampleTest extends TestCase
     public function test_customer_can_register_and_admin_area_rejects_them(): void
     {
         Notification::fake();
-        $this->post('/register', ['first_name' => 'Ana', 'last_name' => 'Customer', 'birthdate' => '2000-01-01', 'gender' => 'female', 'email' => 'ana@example.com', 'phone' => '09170000001', 'password' => 'secret123', 'password_confirmation' => 'secret123'])->assertRedirect(route('verification.notice'));
+        $this->post('/register', ['first_name' => 'Ana', 'last_name' => 'Customer', 'birthdate' => '2000-01-01', 'gender' => 'female', 'email' => 'ana@example.com', 'phone' => '09170000001', 'password' => 'secret12345', 'password_confirmation' => 'secret12345'])->assertRedirect(route('verification.notice'));
         $user = User::where('email', 'ana@example.com')->firstOrFail();
         $this->assertSame('customer', $user->role);
         $this->assertGuest();

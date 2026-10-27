@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Recommendation;
+use App\Http\Requests\RecommendationGenerateRequest;
 use App\Services\FurniturePlacementService;
 use App\Services\RecommendationService;
 use Illuminate\Http\Request;
@@ -16,16 +17,14 @@ class RecommendationController extends Controller
         return view('recommendations.index', compact('recommendations'));
     }
 
-    public function store(Request $request, RecommendationService $service)
+    public function store(RecommendationGenerateRequest $request, RecommendationService $service)
     {
         $preference = $request->user()->preference()->first();
         if (! $preference || blank($preference->furniture_type)) {
             return redirect()->to(route('preferences.edit').'#preference-form')->withErrors(['workflow' => 'Save your furniture preferences before generating recommendations.']);
         }
 
-        $data = $request->validate([
-            'room_image_id' => ['nullable', 'integer'],
-        ]);
+        $data = $request->validated();
 
         $room = !empty($data['room_image_id']) ? $request->user()->roomImages()->findOrFail($data['room_image_id']) : null;
         if ($room && in_array($room->analysis_status, ['queued', 'processing', 'retrying'], true)) {
