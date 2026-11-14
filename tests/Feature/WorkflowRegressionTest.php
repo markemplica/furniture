@@ -236,7 +236,7 @@ class WorkflowRegressionTest extends TestCase
         }
     }
 
-    public function test_selected_room_clears_measurements_from_previous_room(): void
+    public function test_selected_room_preserves_optional_owner_measurements(): void
     {
         $customer = User::factory()->create();
         $preference = $customer->preference()->create([
@@ -248,15 +248,16 @@ class WorkflowRegressionTest extends TestCase
         $this->mock(RecommendationService::class)->shouldReceive('generate')->once()
             ->andReturnUsing(function ($user, $current, $selected, $type) use ($room) {
                 $this->assertSame($room->id, $selected->id);
-                $this->assertEquals(3, $current->room_width_m);
-                $this->assertNull($current->room_depth_m);
+                $this->assertEquals(9, $current->room_width_m);
+                $this->assertEquals(8, $current->room_depth_m);
                 return Recommendation::create([
                     'user_id' => $user->id, 'customer_preference_id' => $current->id,
                     'room_image_id' => $selected->id, 'furniture_type' => $type, 'summary' => 'Regression',
                 ]);
             });
         $this->actingAs($customer)->post(route('recommendations.store'), ['room_image_id' => $room->id])->assertRedirect();
-        $this->assertNull($preference->fresh()->room_depth_m);
+        $this->assertEquals(9, $preference->fresh()->room_width_m);
+        $this->assertEquals(8, $preference->fresh()->room_depth_m);
     }
 
     public function test_room_reanalysis_without_consent_keeps_local_estimate_and_does_not_queue_ai(): void
@@ -288,7 +289,7 @@ class WorkflowRegressionTest extends TestCase
 
         $this->actingAs($customer)->post(route('room.reanalyze', $room))
             ->assertRedirect()
-            ->assertSessionHas('success', fn ($message) => str_contains($message, 'Gemini is not configured'));
+            ->assertSessionHas('success', fn ($message) => str_contains($message, 'AI is unavailable or consent is needed'));
 
         $this->assertSame('fallback', $room->fresh()->analysis_status);
     }

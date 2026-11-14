@@ -2,9 +2,18 @@
 @section('title','Sign in')
 @section('body_class','auth-page')
 @section('content')
+@if(session('password_reset_completed') && session('success'))
+<dialog class="reservation-dialog auth-success-dialog" data-auth-success-dialog aria-labelledby="password-success-title" aria-describedby="password-success-message">
+    <form method="dialog" class="auth-success-close"><button type="submit" aria-label="Close popup"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button></form>
+    <p class="section-kicker">Account recovery</p>
+    <h2 id="password-success-title" class="h4">Password changed</h2>
+    <p id="password-success-message">{{ session('success') }}</p>
+    <form method="dialog" class="d-flex justify-content-center"><button class="btn btn-primary" type="submit" autofocus>Done</button></form>
+</dialog>
+@endif
 <div class="auth-layout">
     <section class="auth-story" aria-labelledby="auth-story-title">
-        <a class="guest-brand" href="{{ route('home') }}" aria-label="FurniCraft home"><span class="brand-mark" aria-hidden="true">F</span> FurniCraft</a>
+        <a class="guest-brand" href="{{ route('home') }}" aria-label="FurniCraft home"><img class="auth-brand-logo" src="{{ asset('images/optimized/lance-logo-circle-64.webp') }}" srcset="{{ asset('images/optimized/lance-logo-circle-64.webp') }} 1x, {{ asset('images/optimized/lance-logo-circle-128.webp') }} 2x" width="56" height="56" alt=""><span>FurniCraft<small>Lance Furniture Shop</small></span></a>
         <div class="auth-story-copy">
             <p class="section-kicker">Lance Furniture Shop</p>
             <h1 id="auth-story-title">Furniture choices that begin with your room.</h1>
@@ -20,12 +29,13 @@
             @if($redirect)
                 <div class="alert alert-info fc-alert" role="status"><strong>Log in to access.</strong> Sign in to continue with your saved favorites, recommendations, room preview, or reservation.</div>
             @endif
+            @error('redirect')<div class="alert alert-danger fc-alert" role="alert">{{ $message }}</div>@enderror
             <form method="POST" action="{{ route('login.store') }}" class="vstack gap-3 auth-form">
                 @csrf
-                <input type="hidden" name="redirect" value="{{ old('redirect', $redirect) }}">
+                <input type="hidden" name="redirect" value="{{ $redirect }}">
                 <div>
                     <label class="form-label" for="email">Email address</label>
-                    <input class="form-control @error('email') is-invalid @enderror" id="email" type="email" name="email" value="{{ old('email') }}" maxlength="255" required autofocus autocomplete="email" inputmode="email" aria-describedby="email-error">
+                    <input class="form-control @error('email') is-invalid @enderror" id="email" type="email" name="email" value="{{ $email ?? '' }}" maxlength="255" required autofocus autocomplete="email" inputmode="email" aria-describedby="email-error">
                     @error('email')<div class="invalid-feedback" id="email-error">{{ $message }}</div>@enderror
                 </div>
                 <div>
@@ -34,7 +44,7 @@
                         <a class="auth-inline-link" href="{{ route('password.request') }}">Forgot password?</a>
                     </div>
                     <div class="input-group">
-                        <input class="form-control @error('password') is-invalid @enderror" id="password" type="password" name="password" required autocomplete="current-password" aria-describedby="password-error">
+                        <input class="form-control @error('password') is-invalid @enderror" id="password" type="password" name="password" maxlength="1024" required autocomplete="current-password" aria-describedby="password-error">
                         <button class="btn btn-outline-secondary m-0" type="button" data-password-toggle aria-controls="password" aria-label="Show password" aria-pressed="false" title="Show password">
                             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path data-password-slash d="M3 3 21 21" style="display:none"/></svg>
                         </button>

@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class AiServiceEvent extends Model
 {
-    protected $fillable = ['feature', 'operation', 'status', 'model', 'http_status', 'latency_ms', 'fallback_used', 'failure_code'];
+    protected $fillable = ['feature', 'operation', 'status', 'model', 'http_status', 'latency_ms', 'fallback_used', 'failure_code', 'input_tokens', 'output_tokens', 'thinking_tokens'];
 
     protected function casts(): array
     {

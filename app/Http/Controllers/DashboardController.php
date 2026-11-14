@@ -12,7 +12,7 @@ class DashboardController extends Controller
         if ($request->user()?->isAdmin()) {
             return redirect()->route('admin.dashboard');
         }
-        $topProducts = FurnitureProduct::where('status', 'active')->withCount(['views', 'favorites', 'reservations'])->get()->sortByDesc(fn ($p) => $p->views_count + ($p->favorites_count * 3) + ($p->reservations_count * 5))->take(3)->values();
+        $topProducts = FurnitureProduct::active()->orderByActivity()->limit(3)->get();
 
         return view('home', compact('topProducts'));
     }

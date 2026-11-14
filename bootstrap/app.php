@@ -16,8 +16,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
+        $middleware->append(\App\Http\Middleware\SecurityHeaders::class);
         $middleware->trustProxies(at: array_values(array_filter(array_map('trim', explode(',', (string) env('TRUSTED_PROXIES', ''))))));
-        $middleware->web(append: [EnsureAccountIsActive::class, ForceHttps::class]);
+        $middleware->web(append: [\Illuminate\Session\Middleware\AuthenticateSession::class, EnsureAccountIsActive::class, ForceHttps::class]);
 
         $middleware->alias([
             'role' => EnsureRole::class,

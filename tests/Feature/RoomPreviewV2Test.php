@@ -32,6 +32,44 @@ class RoomPreviewV2Test extends TestCase
         $this->expectException(\RuntimeException::class);
         app(\App\Services\RoomPreviewRasterService::class)->normalize('not-an-image');
     }
+
+    public function test_room_analysis_sends_a_smaller_image_to_gemini_and_keeps_the_private_original(): void
+    {
+        if (! function_exists('imagecreatetruecolor')) $this->markTestSkipped('GD required');
+
+        config(['services.gemini.key' => 'test-key', 'services.gemini.model' => 'gemini-test', 'services.gemini.fallback_model' => null]);
+        \Illuminate\Support\Facades\Storage::fake('local');
+        $image = imagecreatetruecolor(1600, 900);
+        ob_start(); imagejpeg($image, null, 90); $original = ob_get_clean(); imagedestroy($image);
+        \Illuminate\Support\Facades\Storage::disk('local')->put('rooms/analysis-source.jpg', $original);
+
+        \Illuminate\Support\Facades\Http::fake(['*' => \Illuminate\Support\Facades\Http::response([
+            'candidates' => [['content' => ['parts' => [['text' => json_encode([
+                'vision_geometry' => [
+                    'image_quality' => ['usable' => true, 'issues' => []],
+                    'floor_polygon' => [], 'walls' => [], 'openings' => [], 'horizon_y' => null,
+                    'blocked_zones' => [], 'existing_furniture' => [], 'scale_clues' => [],
+                    'lighting' => [], 'confidence' => 0.5,
+                ],
+            ])]]]]],
+        ])]);
+
+        $result = app(\App\Services\GeminiService::class)->analyzeRoom('rooms/analysis-source.jpg', null, null, 'sofa');
+
+        $this->assertTrue($result['gemini_used']);
+        $this->assertSame([1600, 900], array_slice(getimagesizefromstring($original), 0, 2));
+        \Illuminate\Support\Facades\Http::assertSent(function ($request): bool {
+            $encoded = data_get($request->data(), 'contents.0.parts.1.inline_data.data');
+            $optimized = is_string($encoded) ? base64_decode($encoded, true) : false;
+            $size = is_string($optimized) ? @getimagesizefromstring($optimized) : false;
+
+            return is_array($size)
+                && array_slice($size, 0, 2) === [1280, 720]
+                && ($size['mime'] ?? null) === 'image/jpeg';
+        });
+        $this->assertSame($original, \Illuminate\Support\Facades\Storage::disk('local')->get('rooms/analysis-source.jpg'));
+    }
+
     public function test_v2_endpoint_rejects_client_prompts_and_placement_values(): void
     {
         config()->set('roompreview.use_v2_pipeline', true);
@@ -91,15 +129,16 @@ class RoomPreviewV2Test extends TestCase
     {
         config(['services.gemini.key' => 'test-key', 'services.gemini.model' => 'test-model']);
         \Illuminate\Support\Facades\Http::fakeSequence()
-            ->push(['error' => ['message' => 'Invalid argument']], 400)
+            ->push(['error' => ['message' => 'Invalid response schema argument']], 400)
             ->push(['candidates' => [['content' => ['parts' => [['text' => '{"ok":true}']]]]]], 200);
         $method = new \ReflectionMethod(\App\Services\GeminiService::class, 'request');
-        $parts = [['text' => 'Analyze room'], ['inline_data' => ['mime_type' => 'image/png', 'data' => 'fixture']]];
+        $encoded = base64_encode(file_get_contents(base_path('tests/Fixtures/room-600.png')));
+        $parts = [['text' => 'Analyze room'], ['inline_data' => ['mime_type' => 'image/png', 'data' => $encoded]]];
         $result = $method->invoke(app(\App\Services\GeminiService::class), $parts, true, ['type' => 'object'], 'room_analysis', 10, 0, 1);
         $this->assertSame('{"ok":true}', $result);
         \Illuminate\Support\Facades\Http::assertSentCount(2);
         \Illuminate\Support\Facades\Http::assertSent(fn ($request) =>
-            data_get($request->data(), 'contents.0.parts.1.inline_data.data') === 'fixture'
+            data_get($request->data(), 'contents.0.parts.1.inline_data.data') === $encoded
             && data_get($request->data(), 'generationConfig.responseMimeType') === 'application/json'
             && data_get($request->data(), 'generationConfig.responseJsonSchema') === null
             && str_contains(data_get($request->data(), 'contents.0.parts.2.text', ''), 'schema')

@@ -17,18 +17,26 @@ class RoomPlacementEvaluationController extends Controller
         $rooms = RoomImage::whereNotNull('analyzed_at')->latest('analyzed_at')->paginate(12);
         $evaluations = RoomPlacementEvaluation::where('evaluator_id', $request->user()->id)
             ->whereIn('room_image_id', $rooms->pluck('id'))->get()->keyBy('room_image_id');
-        $allEvaluations = RoomPlacementEvaluation::with('roomImage')->get();
+        $totalEvaluations = RoomPlacementEvaluation::count();
+        $geminiEvaluations = RoomPlacementEvaluation::whereHas('roomImage', fn ($query) => $query->where('analysis->gemini_used', true))->count();
         $sourceCounts = [
-            'gemini' => $allEvaluations->filter(fn ($evaluation) => data_get($evaluation->roomImage?->analysis, 'gemini_used') === true)->count(),
-            'fallback' => $allEvaluations->filter(fn ($evaluation) => data_get($evaluation->roomImage?->analysis, 'gemini_used') !== true)->count(),
+            'gemini' => $geminiEvaluations,
+            'fallback' => $totalEvaluations - $geminiEvaluations,
         ];
+        $aggregateQuery = RoomPlacementEvaluation::query();
+        foreach (self::DIMENSIONS as $dimension) {
+            $aggregateQuery->selectRaw("SUM(CASE WHEN {$dimension} IS NOT NULL THEN 1 ELSE 0 END) as {$dimension}_count")
+                ->selectRaw("SUM(CASE WHEN {$dimension} = 1 THEN 1 ELSE 0 END) as {$dimension}_correct");
+        }
+        $totals = $aggregateQuery->first();
         $metrics = [];
         foreach (self::DIMENSIONS as $dimension) {
-            $judged = $allEvaluations->whereNotNull($dimension);
+            $count = (int) $totals->{"{$dimension}_count"};
+            $correct = (int) $totals->{"{$dimension}_correct"};
             $metrics[$dimension] = [
-                'count' => $judged->count(),
-                'correct' => $judged->where($dimension, true)->count(),
-                'rate' => $judged->isEmpty() ? null : $judged->where($dimension, true)->count() / $judged->count() * 100,
+                'count' => $count,
+                'correct' => $correct,
+                'rate' => $count === 0 ? null : $correct / $count * 100,
             ];
         }
 

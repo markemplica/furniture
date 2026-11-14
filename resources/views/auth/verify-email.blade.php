@@ -22,7 +22,7 @@
         <p class="mt-4 mb-0">Already verified? <a href="{{ route('login') }}">Sign in</a></p>
     </section>
 </div>
-<script>
+<script nonce="{{ \Illuminate\Support\Facades\Vite::cspNonce() }}">
     (() => {
         const form = document.getElementById('resend-code-form');
         const button = document.getElementById('resend-code-button');

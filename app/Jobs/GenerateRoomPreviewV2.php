@@ -12,15 +12,20 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Throwable;
 
-class GenerateRoomPreviewV2 implements ShouldQueue, ShouldBeUnique
+class GenerateRoomPreviewV2 implements ShouldBeUnique, ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 2;
+    public int $tries = 1;
+
     public int $timeout = 540;
+
     public int $uniqueFor = 600;
 
-    public function __construct(public int $generationId, public string $cacheKey) {}
+    public function __construct(public int $generationId, public string $cacheKey)
+    {
+        $this->onQueue('ai');
+    }
 
     public function uniqueId(): string
     {
@@ -34,12 +39,12 @@ class GenerateRoomPreviewV2 implements ShouldQueue, ShouldBeUnique
 
     public function handle(RoomPreviewV2Service $pipeline): void
     {
-        $pipeline->process($this->generationId);
+        $pipeline->process($this->generationId, $this->cacheKey);
     }
 
     public function failed(?Throwable $exception): void
     {
-        RoomPreviewGeneration::whereKey($this->generationId)->whereIn('status', ['queued', 'processing', 'retrying'])->update([
+        RoomPreviewGeneration::whereKey($this->generationId)->where('cache_key', $this->cacheKey)->whereIn('status', ['queued', 'processing', 'retrying'])->update([
             'status' => 'failed',
             'failure_code' => 'queue_job_failed',
             'message' => 'The room preview could not be completed. Please try again.',

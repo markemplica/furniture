@@ -41,6 +41,13 @@ class User extends Authenticatable
         'remember_token',
     ];
 
+    protected static function booted(): void
+    {
+        static::deleting(function (self $user): void {
+            FeedbackReport::anonymizeForUser($user);
+        });
+    }
+
     /**
      * Get the attributes that should be cast.
      *

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 
 class Reservation extends Model
 {
@@ -31,6 +32,51 @@ class Reservation extends Model
     public function transactions()
     {
         return $this->hasMany(ReservationTransaction::class);
+    }
+
+    public function statusTimeline(): Collection
+    {
+        $labels = [
+            'pending' => 'Pending', 'confirmed' => 'Confirmed', 'ready' => 'Ready',
+            'completed' => 'Completed', 'cancelled' => 'Cancelled',
+            'declined' => 'Declined', 'no_show' => 'No-show',
+        ];
+        $events = collect([['status' => 'pending', 'label' => 'Pending', 'at' => $this->created_at, 'order' => 0]]);
+        foreach ($this->transactions->sortBy('id') as $transaction) {
+            $status = match ($transaction->action) {
+                'confirmed', 'pending', 'completed', 'cancelled', 'declined', 'no_show' => $transaction->action,
+                'item_ready_confirmed' => 'ready',
+                'expired' => 'cancelled',
+                default => null,
+            };
+            if ($status !== null) {
+                $events->push(['status' => $status, 'label' => $labels[$status], 'at' => $transaction->created_at, 'order' => $transaction->id + 100]);
+            }
+        }
+
+        foreach ([
+            'confirmed' => $this->confirmed_at,
+            'ready' => $this->item_ready_confirmed_at,
+            'completed' => $this->completed_at,
+            'no_show' => $this->no_show_at,
+        ] as $status => $at) {
+            if ($at && ! $events->contains('status', $status)) {
+                $events->push(['status' => $status, 'label' => $labels[$status], 'at' => $at, 'order' => 10]);
+            }
+        }
+
+        if (! $events->contains('status', $this->status)) {
+            $events->push(['status' => $this->status, 'label' => $labels[$this->status], 'at' => $this->updated_at, 'order' => 1000000]);
+        }
+
+        return $events->sort(fn (array $left, array $right) => ($left['at'] <=> $right['at']) ?: ($left['order'] <=> $right['order']))
+            ->reduce(function (Collection $timeline, array $event): Collection {
+                if (($timeline->last()['status'] ?? null) !== $event['status']) {
+                    $timeline->push(collect($event)->except('order')->all());
+                }
+                return $timeline;
+            }, collect())
+            ->values();
     }
 }
 

@@ -26,14 +26,22 @@
                     @error('name')<div class="invalid-feedback">{{ $message }}</div>@enderror
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label" for="phone">Phone number</label>
-                    <input class="form-control @error('phone') is-invalid @enderror" id="phone" name="phone" type="tel" value="{{ old('phone', $user->phone) }}" maxlength="32" autocomplete="tel" placeholder="e.g. 0917 123 4567">
-                    @error('phone')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    <label class="form-label" for="phone">Mobile number</label>
+                    @php($phoneValue = old('phone', $user->phone))
+                    <input class="form-control @error('phone') is-invalid @enderror" id="phone" name="phone" type="tel" value="{{ is_string($phoneValue) ? $phoneValue : '' }}" maxlength="32" autocomplete="tel" inputmode="tel" placeholder="0917 123 4567" required aria-describedby="phone-hint phone-error">
+                    <div class="form-text" id="phone-hint">Required so the shop can contact you about reservations. Use 0917 123 4567 or +63 917 123 4567. We save it in +63 format.</div>
+                    @error('phone')<div class="invalid-feedback" id="phone-error">{{ $message }}</div>@enderror
                 </div>
                 <div class="col-12">
                     <label class="form-label" for="email">Email address</label>
                     <input class="form-control @error('email') is-invalid @enderror" id="email" name="email" type="email" value="{{ old('email', $user->email) }}" maxlength="255" autocomplete="email" required>
                     @error('email')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                </div>
+                <div class="col-12">
+                    <label class="form-label" for="profile_current_password">Current password to change email</label>
+                    <input class="form-control @error('current_password') is-invalid @enderror" id="profile_current_password" name="current_password" type="password" autocomplete="current-password" aria-describedby="profile-email-password-help">
+                    <div class="form-text" id="profile-email-password-help">Required only when changing your email address. You will need to verify your new email before signing in again.</div>
+                    @error('current_password')<div class="invalid-feedback">{{ $message }}</div>@enderror
                 </div>
                 <div class="col-12">
                     <button class="btn btn-primary" type="submit">Save profile</button>

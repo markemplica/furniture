@@ -49,6 +49,11 @@ class GenerateRoomPreview implements ShouldQueue, ShouldBeUnique
 
         if (! $room || ! $product || ! $generation) return;
 
+        if (\App\Services\AiProvider::name() === 'groq') {
+            $generation->update(['status' => 'fallback', 'message' => 'Groq is used for room understanding. The local 2D preview remains available; generated images are disabled.']);
+            return;
+        }
+
         if (! $room->gemini_consent_at) {
             $generation->update(['status' => 'cancelled', 'message' => 'AI processing is disabled for this photo.']);
             return;

@@ -97,6 +97,13 @@ class FurnitureProduct extends Model
         return $query->where('status', 'active');
     }
 
+    public function scopeOrderByActivity(Builder $query): Builder
+    {
+        return $query->withCount(['views', 'favorites', 'reservations'])
+            ->orderByRaw('(views_count + favorites_count * 3 + reservations_count * 5) DESC')
+            ->orderBy('furniture_products.id');
+    }
+
     public function scopeOfRecommendationType(Builder $query, string $type): Builder
     {
         $categories = static::active()->select('category')->distinct()->pluck('category')

@@ -16,14 +16,18 @@ class PruneRoomImages extends Command
 
     public function handle(RoomPhotoService $photos, PrivacyAudit $audit): int
     {
-        $days = max(1, (int) config('privacy.room_image_retention_days', config('roompreview.retention_days', 30)));
+        $days = max(1, (int) config('privacy.room_image_retention_days', config('roompreview.retention_days', 90)));
         $deleted = 0;
-        RoomImage::where('created_at', '<', now()->subDays($days))->orderBy('id')->chunkById(100, function ($rooms) use ($photos, $audit, &$deleted): void {
+        RoomImage::where('created_at', '<', now()->subDays($days))->orderBy('id')->chunkById(100, function ($rooms) use ($photos, $audit, $days, &$deleted): void {
             foreach ($rooms as $room) {
                 $roomId = $room->id;
                 $userId = $room->user_id;
-                $photos->deleteRoomFiles($room);
-                $room->delete();
+                \Illuminate\Support\Facades\DB::transaction(function () use ($photos, $room) {
+                    $current = RoomImage::whereKey($room->id)->lockForUpdate()->first();
+                    if (! $current) return;
+                    $photos->deleteRoomFiles($current);
+                    $current->delete();
+                });
                 $audit->record('room_photo_retention_expired', 'room_image', $roomId, ['retention_days' => $days], $userId);
                 $deleted++;
             }

@@ -1,4 +1,173 @@
 document.addEventListener('DOMContentLoaded', () => {
+    const reservationPage = document.querySelector('[data-admin-reservations-page]');
+    if (reservationPage) {
+        const feedback = document.querySelector('[data-admin-pagination-error]');
+        let pending;
+        let requestNumber = 0;
+        const loadReservations = async (url, pushHistory = true) => {
+            const number = ++requestNumber;
+            pending?.abort();
+            const controller = new AbortController();
+            pending = controller;
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            reservationPage.setAttribute('aria-busy', 'true');
+            feedback.hidden = true;
+            try {
+                const response = await fetch(url, {
+                    signal: controller.signal,
+                    headers: { Accept: 'text/html', 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                if (!response.ok || response.redirected) throw new Error('Unable to load reservations. Please try again or sign in again.');
+                const html = await response.text();
+                const updated = new DOMParser().parseFromString(html, 'text/html').querySelector('[data-admin-reservations-page]');
+                if (!updated) throw new Error('Unable to load reservations. Please try again.');
+                if (number !== requestNumber) return;
+                reservationPage.innerHTML = updated.innerHTML;
+                if (pushHistory) history.pushState(null, '', url);
+                reservationPage.focus({ preventScroll: true });
+            } catch (error) {
+                if (number !== requestNumber) return;
+                feedback.textContent = error.name === 'AbortError'
+                    ? 'Loading timed out. Please try the page number again.'
+                    : error.message;
+                feedback.hidden = false;
+            } finally {
+                clearTimeout(timeout);
+                if (number === requestNumber) reservationPage.removeAttribute('aria-busy');
+            }
+        };
+        reservationPage.addEventListener('click', (event) => {
+            const link = event.target.closest('.pagination a, nav a.page-link');
+            if (!link || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+            const url = new URL(link.href, location.href);
+            if (url.origin !== location.origin || url.pathname !== location.pathname) return;
+            event.preventDefault();
+            loadReservations(url.href);
+        });
+        window.addEventListener('popstate', () => loadReservations(location.href, false));
+    }
+    const authSuccess = document.querySelector('[data-auth-success-dialog]');
+    if (authSuccess) {
+        authSuccess.addEventListener('close', () => document.querySelector('#email')?.focus());
+        authSuccess.showModal();
+    }
+    document.addEventListener('submit', (event) => {
+        const message = event.submitter?.dataset.confirm || event.target.dataset.confirm;
+        if (message && !window.confirm(message)) event.preventDefault();
+    });
+    const showImageFallback = (photo) => {
+        const fallback = photo.dataset.imageFallback;
+        if (!fallback) return;
+        delete photo.dataset.imageFallback;
+        photo.src = fallback;
+    };
+    document.addEventListener('error', (event) => {
+        if (event.target instanceof HTMLImageElement) showImageFallback(event.target);
+    }, true);
+    document.querySelectorAll('img[data-image-fallback]').forEach((photo) => {
+        if (photo.complete && !photo.naturalWidth) showImageFallback(photo);
+    });
+    // Presentation only: keep an unavailable photo inside its labelled frame.
+    document.querySelectorAll('.planning-room-thumbnail').forEach((photo) => {
+        const syncPhotoFrame = () => photo.parentElement.classList.toggle('is-unavailable', !photo.naturalWidth);
+        photo.addEventListener('load', syncPhotoFrame);
+        photo.addEventListener('error', syncPhotoFrame);
+        if (photo.complete) syncPhotoFrame();
+    });
+    const welcomeToast = document.querySelector('[data-welcome-toast]');
+    document.querySelectorAll('[data-confirm-item-ready]').forEach((form) => {
+        const button = form.querySelector('button');
+        let saving = false;
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (saving) return;
+            saving = true;
+            button.disabled = true;
+            const label = button.textContent;
+            button.textContent = 'Confirming…';
+            form.setAttribute('aria-busy', 'true');
+            let feedback = form.querySelector('[data-readiness-error]');
+            if (feedback) feedback.remove();
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST', body: new FormData(form), signal: AbortSignal.timeout(15000),
+                    headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || response.redirected || !data.item_ready_confirmed_at) {
+                    throw new Error([401, 419].includes(response.status) || response.redirected
+                        ? 'Your session expired. Please sign in again.'
+                        : Object.values(data.errors || {}).flat().join(' ') || data.message || 'Unable to confirm readiness. Please check the reservation status.');
+                }
+                const badge = document.createElement('span');
+                badge.className = 'badge text-bg-success';
+                badge.setAttribute('role', 'status');
+                badge.textContent = data.label || 'Shop marked ready';
+                form.replaceWith(badge);
+            } catch (error) {
+                feedback = document.createElement('p');
+                feedback.dataset.readinessError = '';
+                feedback.className = 'small text-danger mt-1 mb-0';
+                feedback.setAttribute('role', 'alert');
+                feedback.textContent = error.name === 'TimeoutError'
+                    ? 'Confirmation timed out. Check the reservation status before trying again.' : error.message;
+                form.append(feedback);
+                button.disabled = false;
+                button.textContent = label;
+            } finally {
+                saving = false;
+                form.removeAttribute('aria-busy');
+            }
+        });
+    });
+    if (welcomeToast) {
+        let dismissTimer;
+        const pause = () => clearTimeout(dismissTimer);
+        const resume = () => {
+            pause();
+            if (!welcomeToast.matches(':hover, :focus-within')) {
+                dismissTimer = setTimeout(() => welcomeToast.remove(), 5000);
+            }
+        };
+        welcomeToast.querySelector('[data-dismiss-welcome]').addEventListener('click', () => { pause(); welcomeToast.remove(); });
+        welcomeToast.addEventListener('mouseenter', pause);
+        welcomeToast.addEventListener('mouseleave', resume);
+        welcomeToast.addEventListener('focusin', pause);
+        welcomeToast.addEventListener('focusout', () => setTimeout(resume, 0));
+        resume();
+    }
+    if (document.body.classList.contains('home-page')) {
+        const navigation = document.querySelector('.fc-navbar');
+        if (navigation) {
+            const syncHomeHeight = () => document.body.style.setProperty('--home-nav-height', `${navigation.getBoundingClientRect().height}px`);
+            new ResizeObserver(syncHomeHeight).observe(navigation);
+            syncHomeHeight();
+        }
+    }
+    const themeToggle = document.querySelector('[data-theme-toggle]');
+    if (themeToggle) {
+        const syncThemeToggle = () => {
+            const darkMode = document.documentElement.dataset.theme === 'dark';
+            themeToggle.setAttribute('aria-pressed', String(darkMode));
+            themeToggle.textContent = darkMode ? 'Light mode' : 'Dark mode';
+        };
+        syncThemeToggle();
+        const restoreTheme = () => {
+            try { document.documentElement.dataset.theme = localStorage.getItem('furnicraft-theme') === 'dark' ? 'dark' : 'light'; } catch (_) {}
+            syncThemeToggle();
+        };
+        window.addEventListener('pageshow', restoreTheme);
+        window.addEventListener('storage', (event) => {
+            if (event.key === 'furnicraft-theme' || event.key === null) restoreTheme();
+        });
+        themeToggle.addEventListener('click', () => {
+            const darkMode = document.documentElement.dataset.theme !== 'dark';
+            document.documentElement.dataset.theme = darkMode ? 'dark' : 'light';
+            try { localStorage.setItem('furnicraft-theme', darkMode ? 'dark' : 'light'); } catch (_) {}
+            syncThemeToggle();
+        });
+    }
+
     const reportForm = document.querySelector('[data-report-filters]');
     if (reportForm) {
         const input = reportForm.querySelector('[data-report-search]');
@@ -6,7 +175,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const error = reportForm.querySelector('[data-report-search-error]');
         let timer;
         let pending;
+        let searchVersion = 0;
+        const clear = reportForm.querySelector('[data-search-clear]');
+        const syncClear = () => { if (clear) clear.hidden = input.value.length === 0; };
+        syncClear();
+        clear?.addEventListener('click', () => {
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.focus();
+        });
         input.addEventListener('input', () => {
+            syncClear();
+            const version = ++searchVersion;
             clearTimeout(timer);
             pending?.abort();
             timer = setTimeout(async () => {
@@ -22,18 +202,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     const document = new DOMParser().parseFromString(await response.text(), 'text/html');
                     const updated = document.querySelector('[data-report-results]');
                     if (!updated) throw new Error('Search unavailable');
-                    if (controller.signal.aborted) return;
+                    if (controller.signal.aborted || version !== searchVersion) return;
                     results.innerHTML = updated.innerHTML;
                     history.replaceState(null, '', url);
                 } catch (failure) {
-                    if (failure.name !== 'AbortError') {
+                    if (failure.name !== 'AbortError' && version === searchVersion) {
                         error.textContent = 'Search is temporarily unavailable. Submit the search form to try again.';
                         error.hidden = false;
                     }
                 } finally {
                     if (pending === controller) results.removeAttribute('aria-busy');
                 }
-            }, 300);
+            }, 280);
         });
     }
     document.querySelectorAll('[data-favorite-form]').forEach((form) => {
@@ -222,7 +402,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const choice = document.createElement('dialog');
         choice.className = 'reservation-dialog';
         choice.setAttribute('aria-labelledby', 'upload-ai-choice-title');
-        choice.innerHTML = '<h2 class="h4" id="upload-ai-choice-title">Enable AI analysis?</h2><p>Enable AI to send this room photo to Google Gemini for automatic analysis and previews. Continue without AI to use local guidance without sending the photo to Gemini.</p><div class="d-flex flex-wrap gap-2"><button type="button" class="btn btn-primary" data-enable-ai>Enable AI</button><button type="button" class="btn btn-outline-dark" data-without-ai>Continue without AI</button><button type="button" class="btn btn-link" data-cancel-upload>Cancel</button></div>';
+        const providerName = uploadForm?.querySelector('[name="ai_consent_provider"]')?.value === 'groq' ? 'Groq' : 'Google Gemini';
+        choice.innerHTML = '<h2 class="h4" id="upload-ai-choice-title">Enable AI analysis?</h2><p>Enable AI to send this room photo to ' + providerName + ' for room analysis and placement checking. Continue without AI to use local guidance without sending the photo to an AI provider.</p><div class="d-flex flex-wrap gap-2"><button type="button" class="btn btn-primary" data-enable-ai>Enable AI</button><button type="button" class="btn btn-outline-dark" data-without-ai>Continue without AI</button><button type="button" class="btn btn-link" data-cancel-upload>Cancel</button></div>';
         document.body.append(choice);
         let continueLocally = false;
         choice.querySelector('[data-enable-ai]').addEventListener('click', () => {
@@ -332,6 +513,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (roomFieldset) roomFieldset.disabled = false;
                 document.querySelectorAll('[data-saved-furniture-type]').forEach((element) => element.textContent = furnitureType);
                 document.querySelectorAll('[data-saved-furniture-type-lower]').forEach((element) => element.textContent = furnitureType.toLowerCase());
+                const savedBudget = document.querySelector('[data-saved-budget]');
+                if (savedBudget && payload.preference) {
+                    const money = (value) => Number(value).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    savedBudget.textContent = `PHP ${money(payload.preference.budget_min)} – ${money(payload.preference.budget_max)}`;
+                }
 
                 const stepOne = document.querySelector('[data-workflow-step="1"]');
                 const stepTwo = document.querySelector('[data-workflow-step="2"]');
@@ -366,93 +552,117 @@ document.addEventListener('DOMContentLoaded', () => {
         preferencesForm.addEventListener('change', syncSubmitState);
     }
 
-    const input = document.querySelector('[data-live-search]');
+    const catalogHeading = document.querySelector('.catalog-page-heading');
+    if (catalogHeading) {
+        const navigation = document.querySelector('.fc-navbar');
+        const catalog = catalogHeading.closest('.catalog-page');
+        const sidebar = catalog.querySelector('.catalog-filters');
+        let layoutFrame;
+        const syncCatalogOffsets = () => {
+            const navigationHeight = navigation?.getBoundingClientRect().height || 0;
+            const headingHeight = catalogHeading.getBoundingClientRect().height;
+            const offset = Math.ceil(navigationHeight + headingHeight + 8);
+            catalog.style.setProperty('--catalog-nav-height', `${navigationHeight}px`);
+            catalog.style.setProperty('--catalog-content-offset', `${offset}px`);
+            document.documentElement.style.setProperty('--catalog-content-offset', `${offset}px`);
+            // Keep every filter reachable when a short viewport cannot fit the whole sidebar.
+            catalog.classList.toggle('catalog-filters-flow', Boolean(sidebar && sidebar.getBoundingClientRect().height > window.innerHeight - offset - 8));
+        };
+        const scheduleCatalogOffsets = () => {
+            cancelAnimationFrame(layoutFrame);
+            layoutFrame = requestAnimationFrame(syncCatalogOffsets);
+        };
+        const observer = new ResizeObserver(scheduleCatalogOffsets);
+        observer.observe(catalogHeading);
+        if (navigation) observer.observe(navigation);
+        if (sidebar) observer.observe(sidebar);
+        window.addEventListener('resize', scheduleCatalogOffsets);
+        syncCatalogOffsets();
+    }
 
+    const catalogFilters = document.querySelector('[data-catalog-filter-disclosure]');
+    if (catalogFilters) {
+        const mobileFilters = window.matchMedia('(max-width: 991.98px)');
+        const syncFilterDisclosure = () => {
+            catalogFilters.open = !mobileFilters.matches || window.location.search.length > 0;
+        };
+        syncFilterDisclosure();
+        mobileFilters.addEventListener('change', syncFilterDisclosure);
+    }
+
+    const input = document.querySelector('[data-live-search]');
     if (input) {
         const box = document.querySelector('[data-search-results]');
-        const grid = document.querySelector('[data-product-grid]');
-        const count = document.querySelector('[data-product-count]');
-        const pagination = document.querySelector('[data-catalog-pagination]');
-        const liveEmpty = document.querySelector('[data-live-search-empty]');
-        const serverEmpty = document.querySelector('[data-server-empty]');
-        const originalGrid = grid?.innerHTML ?? '';
-        const originalCount = count?.textContent ?? '';
-        const originallyEmpty = grid?.hidden ?? true;
-        let timer;
+        const results = document.querySelector('[data-catalog-results]');
+        const form = input.form;
+        const clearSearch = document.querySelector('[data-search-clear]');
+        const searchStatus = document.querySelector('[data-search-status]');
+        let timer, searchController;
         let requestNumber = 0;
-
-        const restoreCatalog = () => {
-            if (grid) {
-                grid.innerHTML = originalGrid;
-                grid.hidden = originallyEmpty;
+        const clearFilters = () => {
+            for (const name of ['category', 'style', 'wood_type', 'varnish_finish', 'min_price', 'max_price']) {
+                const field = form.elements.namedItem(name);
+                if (field) field.value = '';
             }
-            if (count) count.textContent = originalCount;
-            if (pagination) pagination.hidden = false;
-            if (liveEmpty) liveEmpty.hidden = true;
-            if (serverEmpty) serverEmpty.hidden = !originallyEmpty;
-            box.innerHTML = '';
-            box.hidden = true;
         };
-
-        const renderProduct = (item) => `
-            <article class="product-card">
-                <a href="${escapeHtml(item.url)}"><img src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name)}"></a>
-                <div class="product-card-body">
-                    <div class="d-flex justify-content-between gap-2">
-                        <span class="product-meta">${escapeHtml(item.category)}</span>
-                        ${item.saved ? '<span class="status status-confirmed">Saved</span>' : ''}
-                    </div>
-                    <h3 class="mt-2"><a class="text-reset text-decoration-none" href="${escapeHtml(item.url)}">${escapeHtml(item.name)}</a></h3>
-                    <p class="product-meta"><span class="swatch ${escapeHtml(String(item.wood_type).toLowerCase())}"></span>${escapeHtml(item.wood_type)} · ${escapeHtml(item.varnish_finish)} · ${escapeHtml(item.style)}</p>
-                    <p class="product-price">PHP ${Number(item.price).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
-                    <div class="product-card-actions"><a class="btn btn-outline-dark w-100" href="${escapeHtml(item.url)}">View details</a></div>
-                </div>
-            </article>`;
-
-        const showMatches = (items, query) => {
-            if (grid) {
-                grid.innerHTML = items.map(renderProduct).join('');
-                grid.hidden = items.length === 0;
-            }
-            if (count) count.textContent = `${items.length} ${items.length === 1 ? 'match' : 'matches'} for “${query}”`;
-            if (pagination) pagination.hidden = true;
-            if (serverEmpty) serverEmpty.hidden = true;
-            if (liveEmpty) liveEmpty.hidden = items.length > 0;
-        };
-
-        input.addEventListener('input', () => {
+        const cancelSearch = () => {
             clearTimeout(timer);
+            searchController?.abort();
+            return ++requestNumber;
+        };
+        input.addEventListener('input', () => {
+            const currentRequest = cancelSearch();
             const query = input.value.trim();
-
-            if (query.length < 2) {
-                requestNumber += 1;
-                restoreCatalog();
-                return;
-            }
-
+            if (clearSearch) clearSearch.hidden = input.value.length === 0;
+            box.hidden = true;
+            box.innerHTML = '';
+            results.removeAttribute('aria-busy');
+            if (searchStatus) searchStatus.textContent = 'Updating catalog results…';
             timer = setTimeout(async () => {
-                const currentRequest = ++requestNumber;
+                const controller = new AbortController();
+                searchController = controller;
+                const url = new URL(form.action);
+                if (query) url.searchParams.set('q', query);
+                results.setAttribute('aria-busy', 'true');
                 try {
-                    const response = await fetch(`${input.dataset.endpoint}?q=${encodeURIComponent(query)}`, {
-                        headers: { Accept: 'application/json' },
-                    });
-                    const items = await response.json();
-                    if (currentRequest !== requestNumber) return;
-
-                    box.innerHTML = items.length
-                        ? items.slice(0, 6).map((item) => `<a class="search-result" href="${escapeHtml(item.url)}"><img src="${escapeHtml(item.image)}" alt=""><span><strong>${escapeHtml(item.name)}</strong><small class="d-block text-muted">${escapeHtml(item.category)}</small></span><span>PHP ${Number(item.price).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></a>`).join('')
-                        : `<div class="p-3 text-muted">No furniture matches “${escapeHtml(query)}” yet. Try a different term.</div>`;
-                    box.hidden = false;
-                    showMatches(items, query);
+                    // One request uses the full catalog query, total, and pagination.
+                    const response = await fetch(url, { headers: { Accept: 'text/html' }, signal: controller.signal });
+                    if (!response.ok || response.redirected) throw new Error('Search unavailable');
+                    const updatedPage = new DOMParser().parseFromString(await response.text(), 'text/html');
+                    const updatedResults = updatedPage.querySelector('[data-catalog-results]');
+                    if (!updatedResults) throw new Error('Search unavailable');
+                    if (currentRequest !== requestNumber || controller.signal.aborted) return;
+                    results.innerHTML = updatedResults.innerHTML;
+                    clearFilters();
+                    history.replaceState(null, '', url);
+                    const count = results.querySelector('[data-product-count]')?.textContent?.trim() ?? '';
+                    if (searchStatus) searchStatus.textContent = query ? `${count} matching "${query}".` : `${count} in the catalog.`;
                 } catch (error) {
-                    box.innerHTML = '<div class="p-3 text-muted">Search is temporarily unavailable. Use the filters below.</div>';
+                    if (error.name === 'AbortError' || currentRequest !== requestNumber) return;
+                    const message = 'Search is temporarily unavailable. Results are unchanged. Press Enter to try again.';
+                    box.innerHTML = `<div class="p-3 text-muted" role="status">${message}</div>`;
                     box.hidden = false;
+                    if (searchStatus) searchStatus.textContent = message;
+                } finally {
+                    if (currentRequest === requestNumber) results.removeAttribute('aria-busy');
                 }
             }, 280);
         });
-
+        if (clearSearch) {
+            clearSearch.hidden = input.value.length === 0;
+            clearSearch.addEventListener('click', () => {
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.focus();
+            });
+        }
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.isComposing) { cancelSearch(); clearFilters(); }
+            if (event.key === 'Escape') box.hidden = true;
+        });
+        form.addEventListener('submit', cancelSearch);
         document.addEventListener('click', (event) => {
-            if (!event.target.closest('.search-wrap')) box.hidden = true;
+            if (!input.closest('.search-wrap').contains(event.target)) box.hidden = true;
         });
     }
 
@@ -545,11 +755,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (generateRecommendations) generateRecommendations.disabled = !roomReady;
             if (selectedRoomLabel) {
                 selectedRoomLabel.textContent = roomReady
-                    ? `Room ${selectedOption.dataset.roomId} selected. Only products matching your saved furniture type and preferences will be ranked.`
-                    : `Room ${selectedOption.dataset.roomId} is still being analyzed. Recommendations will unlock automatically when it is ready.`;
+                    ? 'Saved room photo selected. Only products matching your saved furniture type and preferences will be ranked.'
+                    : 'The saved room photo is still being analyzed. Recommendations will unlock automatically when it is ready.';
             }
             if (announce && roomSelectionStatus) {
-                roomSelectionStatus.textContent = `Room ${selectedOption.dataset.roomId} selected. You can generate recommendations below without reloading the page.`;
+                roomSelectionStatus.textContent = 'Saved room photo selected. You can generate recommendations below without reloading the page.';
             }
         };
 
@@ -575,20 +785,42 @@ document.addEventListener('DOMContentLoaded', () => {
         if (initialRoom) selectRoom(initialRoom, false);
     }
 
+    // Sequential polling, bounded in time and count; never overlap slow requests.
+    const startBoundedPoll = (poll, pending) => {
+        const deadline = Date.now() + 600000;
+        let attempts = 0;
+        const tick = async () => {
+            if (!pending()) return;
+            if (Date.now() >= deadline || attempts >= 120) {
+                document.querySelectorAll('[data-room-analysis-message]').forEach((element) => {
+                    const room = element.closest('[data-room-analysis-watch]');
+                    if (room && ['queued', 'processing', 'retrying'].includes(room.dataset.roomAnalysisCurrent)) {
+                        element.textContent = 'Automatic status checks have stopped. Refresh this page to check progress or recover a timed-out analysis. Local guidance remains available.';
+                    }
+                });
+                return;
+            }
+            if (!document.hidden) { attempts++; await poll(); }
+            if (pending()) window.setTimeout(tick, 3000);
+        };
+        window.setTimeout(tick, 3000);
+    };
     const analysisWatches = [...document.querySelectorAll('[data-room-analysis-watch]')];
     const activeAnalysisStatuses = ['queued', 'processing', 'retrying'];
     if (analysisWatches.some((element) => activeAnalysisStatuses.includes(element.dataset.roomAnalysisCurrent || (element.dataset.roomReady === 'true' ? 'completed' : 'queued')))) {
         const labels = { queued: 'Room analysis queued', processing: 'Analyzing room image', retrying: 'AI temporarily unavailable · retrying', completed: 'AI analyzed', fallback: 'Local guidance', failed: 'Needs retry' };
         const poll = async () => {
-            await Promise.all(analysisWatches.map(async (element) => {
-                if (!element.isConnected) return;
+            for (const element of analysisWatches) {
+                if (!element.isConnected) continue;
                 const current = element.dataset.roomAnalysisCurrent || (element.dataset.roomReady === 'true' ? 'completed' : 'queued');
-                if (!activeAnalysisStatuses.includes(current)) return;
+                if (element.dataset.pollingStopped || !activeAnalysisStatuses.includes(current)) continue;
                 try {
-                    const response = await fetch(element.dataset.roomAnalysisWatch, { headers: { Accept: 'application/json' } });
-                    if (!response.ok) return;
+                    const response = await fetch(element.dataset.roomAnalysisWatch, { signal: AbortSignal.timeout(10000), headers: { Accept: 'application/json' } });
+                    if (!response.ok) { if ([401, 403, 404, 429].includes(response.status)) element.dataset.pollingStopped = 'true'; continue; }
                     const payload = await response.json();
                     element.dataset.roomAnalysisCurrent = payload.status;
+                    const retry = element.querySelector('[data-room-retry]');
+                    if (retry) retry.disabled = activeAnalysisStatuses.includes(payload.status);
                     element.dataset.roomReady = String(Boolean(payload.ready));
                     if (roomPicker && element.dataset.roomId === roomPicker.value) {
                         roomPicker.dispatchEvent(new Event('change'));
@@ -596,9 +828,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     element.querySelector('[data-room-analysis-label]')?.replaceChildren(document.createTextNode(labels[payload.status] || payload.status));
                     const message = element.querySelector('[data-room-analysis-message]');
                     if (message) message.textContent = payload.message || (payload.ready ? 'Room analysis is ready.' : '');
-                    if (payload.ready && payload.analysis) {
-                        document.querySelectorAll('[data-preview-analysis]').forEach((node) => { node.textContent = JSON.stringify(payload.analysis); });
+                    if ((payload.ready && payload.analysis) || payload.status === 'failed') {
+                        const previewAnalysis = document.querySelector('[data-preview-analysis]');
+                        const previewFrame = document.querySelector('[data-room-preview]');
+                        if (payload.analysis && previewAnalysis && previewFrame) {
+                            let previousAnalysis = null;
+                            try { previousAnalysis = JSON.parse(previewAnalysis.textContent || 'null'); } catch (_) {}
+                            if (JSON.stringify(previousAnalysis) !== JSON.stringify(payload.analysis)) {
+                                // The server computes product placement from the saved analysis. Reload
+                                // so its placement coordinates and confidence match the new geometry.
+                                window.location.reload();
+                                continue;
+                            }
+                        }
+                        if (payload.analysis) document.querySelectorAll('[data-preview-analysis]').forEach((node) => { node.textContent = JSON.stringify(payload.analysis); });
                         document.querySelectorAll('[data-room-preview]').forEach((frame) => {
+                            frame.dataset.placementStatus = payload.status;
                             const previous = frame.roomPreviewEngine;
                             if (previous?.canvas) previous.canvas.width = 0;
                             const engine = window.RoomPreviewEngine ? new window.RoomPreviewEngine(frame) : null;
@@ -608,19 +853,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (error) {
                     // Keep the current state; the next poll can recover from a transient network error.
                 }
-            }));
+            }
         };
-        window.setInterval(poll, 3000);
+        startBoundedPoll(poll, () => analysisWatches.some(element => !element.dataset.pollingStopped && activeAnalysisStatuses.includes(element.dataset.roomAnalysisCurrent || (element.dataset.roomReady === 'true' ? 'completed' : 'queued'))));
     }
     const previewWatches = [...document.querySelectorAll('[data-preview-watch]')];
     const activePreviewStatuses = ['queued', 'processing', 'retrying'];
     if (previewWatches.some((element) => activePreviewStatuses.includes(element.dataset.previewStatus))) {
         const pollPreviews = async () => {
             await Promise.all(previewWatches.map(async (element) => {
-                if (!activePreviewStatuses.includes(element.dataset.previewStatus)) return;
+                if (element.dataset.pollingStopped || !activePreviewStatuses.includes(element.dataset.previewStatus)) return;
                 try {
-                    const response = await fetch(element.dataset.previewWatch, { headers: { Accept: 'application/json' } });
-                    if (!response.ok) return;
+                    const response = await fetch(element.dataset.previewWatch, { signal: AbortSignal.timeout(10000), headers: { Accept: 'application/json' } });
+                    if (!response.ok) { if ([401, 403, 404, 429].includes(response.status)) element.dataset.pollingStopped = 'true'; return; }
                     const payload = await response.json();
                     element.dataset.previewStatus = payload.status;
                     const message = element.querySelector('[data-preview-message]');
@@ -633,7 +878,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }));
         };
-        window.setInterval(pollPreviews, 3000);
+        startBoundedPoll(pollPreviews, () => previewWatches.some(element => !element.dataset.pollingStopped && activePreviewStatuses.includes(element.dataset.previewStatus)));
     }
 
     function escapeHtml(value) {

@@ -52,7 +52,7 @@ class RoomPreviewRasterService
     /** Deterministic compositing fallback using only trusted catalog image bytes and server geometry. */
     public function composite(string $roomBytes, FurnitureProduct $product, array $placement): ?array
     {
-        if (! $this->available()) return null;
+        if (! $this->available() || ($placement['renderable'] ?? true) === false) return null;
         $room = @imagecreatefromstring($roomBytes);
         $furnitureBytes = $this->catalogImageBytes($product);
         $item = $furnitureBytes ? @imagecreatefromstring($furnitureBytes) : false;
@@ -63,31 +63,165 @@ class RoomPreviewRasterService
         }
         $canvasWidth = imagesx($room);
         $canvasHeight = imagesy($room);
-        $itemWidth = imagesx($item);
-        $itemHeight = imagesy($item);
-        $widthPercent = max(1.0, min(90.0, (float) ($placement['max_width_percent'] ?? 35)));
-        // Scale both axes together using the actual catalog photograph/cutout.
-        // Physical dimensions do not describe the projected shape of a multi-piece set.
-        $desiredWidth = max(24, $canvasWidth * $widthPercent / 100);
-        $scale = min($desiredWidth / $itemWidth, $canvasWidth * 0.9 / $itemWidth, $canvasHeight * 0.92 / $itemHeight);
-        $targetWidth = max(1, (int) round($itemWidth * $scale));
-        $targetHeight = max(1, (int) round($itemHeight * $scale));
-        $centerX = (int) round($canvasWidth * max(0.05, min(0.95, (float) ($placement['x_percent'] ?? 50) / 100)));
-        $bottomY = (int) round($canvasHeight * max(0.05, min(0.98, (float) ($placement['y_percent'] ?? 86) / 100)));
-        $left = max(0, min($canvasWidth - $targetWidth, $centerX - (int) ($targetWidth / 2)));
-        $top = max(0, min($canvasHeight - $targetHeight, $bottomY - $targetHeight));
-
-        // A small translucent contact shadow grounds the item at its floor anchor.
-        $shadow = imagecolorallocatealpha($room, 20, 16, 12, 88);
-        imagefilledellipse($room, $left + (int) round($targetWidth / 2), min($canvasHeight - 1, $top + $targetHeight), (int) ($targetWidth * 0.82), max(3, (int) ($targetWidth * 0.09)), $shadow);
+        imagepalettetotruecolor($item);
+        $cropped = $this->cropTransparentBorder($item);
+        if ($cropped === null) {
+            imagedestroy($item);
+            imagedestroy($room);
+            return null;
+        }
+        if ($cropped !== $item) {
+            imagedestroy($item);
+            $item = $cropped;
+        }
+        $opening = ($placement['surface'] ?? null) === 'opening'
+            || (filled($product->category) && str_contains(strtolower($product->recommendationType()), 'door'));
+        $quad = $opening
+            ? $this->openingQuad($placement['quad_percent'] ?? null, $canvasWidth, $canvasHeight)
+            : $this->furnitureQuad($placement, imagesx($item), imagesy($item), $canvasWidth, $canvasHeight);
+        if ($quad === null) {
+            imagedestroy($item);
+            imagedestroy($room);
+            return null;
+        }
+        $left = max(0, (int) floor(min(array_column($quad, 0))));
+        $top = max(0, (int) floor(min(array_column($quad, 1))));
+        $right = min($canvasWidth, (int) ceil(max(array_column($quad, 0))));
+        $bottom = min($canvasHeight, (int) ceil(max(array_column($quad, 1))));
+        $guardBounds = [$left, $top, $right, $bottom];
         imagealphablending($room, true);
-        imagecopyresampled($room, $item, $left, $top, 0, 0, $targetWidth, $targetHeight, $itemWidth, $itemHeight);
+        // Doors fill detected openings; a floor shadow would invent another object below the frame.
+        if (! $opening) {
+            $shadowWidth = max(1, (int) (($right - $left) * 0.82));
+            $shadowHeight = max(3, (int) (($right - $left) * 0.09));
+            $shadowX = (int) round(($quad[2][0] + $quad[3][0]) / 2);
+            $shadowY = (int) round(($quad[2][1] + $quad[3][1]) / 2);
+            $shadow = imagecolorallocatealpha($room, 20, 16, 12, 88);
+            imagefilledellipse($room, $shadowX, $shadowY, $shadowWidth, $shadowHeight, $shadow);
+            $guardBounds = [
+                max(0, min($left, $shadowX - (int) ceil($shadowWidth / 2))),
+                max(0, min($top, $shadowY - (int) ceil($shadowHeight / 2))),
+                min($canvasWidth, max($right, $shadowX + (int) ceil($shadowWidth / 2) + 1)),
+                min($canvasHeight, max($bottom, $shadowY + (int) ceil($shadowHeight / 2) + 1)),
+            ];
+        }
+        $flip = ($placement['flip'] ?? 1) === -1 || ($placement['flip'] ?? false) === true;
+        $this->drawProjectedImage($room, $item, $quad, $flip);
         ob_start();
         imagepng($room);
         $bytes = (string) ob_get_clean();
         imagedestroy($item);
         imagedestroy($room);
-        return ['bytes' => $bytes, 'mime' => 'image/png', 'bounds' => [$left, $top, $left + $targetWidth, $top + $targetHeight]];
+        return ['bytes' => $bytes, 'mime' => 'image/png', 'bounds' => [$left, $top, $right, $bottom], 'guard_bounds' => $guardBounds];
+    }
+
+    /** Only alpha-transparent padding is removed; opaque backgrounds and product colours are retained. */
+    private function cropTransparentBorder(\GdImage $image): ?\GdImage
+    {
+        $width = imagesx($image); $height = imagesy($image);
+        // Most catalog JPEGs are opaque; four opaque corners already fix all crop bounds.
+        $corners = [[0, 0], [$width - 1, 0], [$width - 1, $height - 1], [0, $height - 1]];
+        if (count(array_filter($corners, fn ($point) => ((imagecolorat($image, $point[0], $point[1]) >> 24) & 127) < 127)) === 4) return $image;
+        $left = $width; $top = $height; $right = -1; $bottom = -1;
+        for ($y = 0; $y < $height; $y++) for ($x = 0; $x < $width; $x++) {
+            if (((imagecolorat($image, $x, $y) >> 24) & 127) === 127) continue;
+            $left = min($left, $x); $right = max($right, $x);
+            $top = min($top, $y); $bottom = max($bottom, $y);
+        }
+        if ($right < $left) return null;
+        if ($left === 0 && $top === 0 && $right === $width - 1 && $bottom === $height - 1) return $image;
+        $crop = imagecrop($image, ['x' => $left, 'y' => $top, 'width' => $right - $left + 1, 'height' => $bottom - $top + 1]);
+        if ($crop) imagesavealpha($crop, true);
+        return $crop ?: $image;
+    }
+
+    private function openingQuad(mixed $points, int $width, int $height): ?array
+    {
+        if (! is_array($points) || count($points) !== 4) return null;
+        $quad = [];
+        foreach (array_values($points) as $point) {
+            if (! is_array($point) || ! isset($point[0], $point[1]) || ! is_numeric($point[0]) || ! is_numeric($point[1])) return null;
+            [$x, $y] = [(float) $point[0], (float) $point[1]];
+            if (! is_finite($x) || ! is_finite($y) || $x < 0 || $x > 100 || $y < 0 || $y > 100) return null;
+            $quad[] = [$x * $width / 100, $y * $height / 100];
+        }
+        // Reject crossing/concave/degenerate quads rather than moving a door to an invented location.
+        $sign = null;
+        for ($i = 0; $i < 4; $i++) {
+            [$a, $b, $c] = [$quad[$i], $quad[($i + 1) % 4], $quad[($i + 2) % 4]];
+            $cross = ($b[0] - $a[0]) * ($c[1] - $b[1]) - ($b[1] - $a[1]) * ($c[0] - $b[0]);
+            if (abs($cross) < 0.01 || ($sign !== null && ($cross > 0) !== $sign)) return null;
+            $sign = $cross > 0;
+        }
+        return $quad;
+    }
+
+    private function furnitureQuad(array $placement, int $itemWidth, int $itemHeight, int $width, int $height): array
+    {
+        $targetWidth = max(1, $width * max(1, min(90, (float) ($placement['max_width_percent'] ?? 35))) / 100);
+        $scale = min($targetWidth / $itemWidth, $width * .9 / $itemWidth, $height * .92 / $itemHeight);
+        $w = $itemWidth * $scale; $h = $itemHeight * $scale;
+        $rotation = deg2rad(max(-18, min(18, (float) ($placement['rotation_deg'] ?? 0))));
+        $shear = tan(deg2rad(max(-24, min(24, (float) ($placement['perspective_deg'] ?? 0))))) * .35;
+        if (abs($rotation) < 1e-9 && abs($shear) < 1e-9) {
+            // Snap the unwarped rectangle as a unit; rounding each edge separately distorts tall cutouts.
+            $w = max(1, (int) round($w)); $h = max(1, (int) round($h));
+            $left = (int) round(max(0, min($width - $w, $width * max(.05, min(.95, (float) ($placement['x_percent'] ?? 50) / 100)) - $w / 2)));
+            $top = (int) round(max(0, min($height - $h, $height * max(.05, min(.98, (float) ($placement['y_percent'] ?? 86) / 100)) - $h)));
+            return [[$left, $top], [$left + $w, $top], [$left + $w, $top + $h], [$left, $top + $h]];
+        }
+        $offsets = [];
+        foreach ([[-$w / 2, -$h], [$w / 2, -$h], [$w / 2, 0], [-$w / 2, 0]] as [$x, $y]) {
+            $x += $shear * $y;
+            $offsets[] = [$x * cos($rotation) - $y * sin($rotation), $x * sin($rotation) + $y * cos($rotation)];
+        }
+        $minX = min(array_column($offsets, 0)); $maxX = max(array_column($offsets, 0));
+        $minY = min(array_column($offsets, 1)); $maxY = max(array_column($offsets, 1));
+        $fit = min(1, $width * .9 / max(1, $maxX - $minX), $height * .92 / max(1, $maxY - $minY));
+        $centerX = max(-$minX * $fit, min($width - $maxX * $fit, $width * max(.05, min(.95, (float) ($placement['x_percent'] ?? 50) / 100))));
+        $bottomY = max(-$minY * $fit, min($height - $maxY * $fit, $height * max(.05, min(.98, (float) ($placement['y_percent'] ?? 86) / 100))));
+        return array_map(fn ($point) => [$centerX + $point[0] * $fit, $bottomY + $point[1] * $fit], $offsets);
+    }
+
+    /** Inverse homography maps destination pixels to the original image, avoiding gaps between triangles. */
+    private function drawProjectedImage(\GdImage $canvas, \GdImage $source, array $quad, bool $flip): void
+    {
+        [[$x0, $y0], [$x1, $y1], [$x2, $y2], [$x3, $y3]] = $quad;
+        if ($x1 > $x0 && $y3 > $y0 && abs($y0 - $y1) < 1e-6 && abs($y2 - $y3) < 1e-6 && abs($x0 - $x3) < 1e-6 && abs($x1 - $x2) < 1e-6) {
+            if ($flip) imageflip($source, IMG_FLIP_HORIZONTAL);
+            imagecopyresampled($canvas, $source, (int) floor($x0), (int) floor($y0), 0, 0,
+                max(1, (int) ceil($x1) - (int) floor($x0)), max(1, (int) ceil($y3) - (int) floor($y0)), imagesx($source), imagesy($source));
+            return;
+        }
+        $dx1 = $x1 - $x2; $dx2 = $x3 - $x2; $dx3 = $x0 - $x1 + $x2 - $x3;
+        $dy1 = $y1 - $y2; $dy2 = $y3 - $y2; $dy3 = $y0 - $y1 + $y2 - $y3;
+        $denominator = $dx1 * $dy2 - $dx2 * $dy1;
+        $g = abs($denominator) < 1e-9 ? 0 : ($dx3 * $dy2 - $dx2 * $dy3) / $denominator;
+        $h = abs($denominator) < 1e-9 ? 0 : ($dx1 * $dy3 - $dx3 * $dy1) / $denominator;
+        $a = $x1 - $x0 + $g * $x1; $b = $x3 - $x0 + $h * $x3; $c = $x0;
+        $d = $y1 - $y0 + $g * $y1; $e = $y3 - $y0 + $h * $y3; $f = $y0;
+        $inverse = [$e - $f * $h, $c * $h - $b, $b * $f - $c * $e, $f * $g - $d, $a - $c * $g, $c * $d - $a * $f, $d * $h - $e * $g, $b * $g - $a * $h, $a * $e - $b * $d];
+        $left = max(0, (int) floor(min(array_column($quad, 0))));
+        $top = max(0, (int) floor(min(array_column($quad, 1))));
+        $right = min(imagesx($canvas), (int) ceil(max(array_column($quad, 0))));
+        $bottom = min(imagesy($canvas), (int) ceil(max(array_column($quad, 1))));
+        // Resample once with GD before warping to avoid aliasing when reducing large catalog photographs.
+        $sample = imagecreatetruecolor(max(1, $right - $left), max(1, $bottom - $top));
+        imagealphablending($sample, false); imagesavealpha($sample, true);
+        imagefill($sample, 0, 0, imagecolorallocatealpha($sample, 0, 0, 0, 127));
+        imagecopyresampled($sample, $source, 0, 0, 0, 0, imagesx($sample), imagesy($sample), imagesx($source), imagesy($source));
+        for ($y = $top; $y < $bottom; $y++) for ($x = $left; $x < $right; $x++) {
+            $px = $x + .5; $py = $y + .5;
+            $den = $inverse[6] * $px + $inverse[7] * $py + $inverse[8];
+            if (abs($den) < 1e-9) continue;
+            $u = ($inverse[0] * $px + $inverse[1] * $py + $inverse[2]) / $den;
+            $v = ($inverse[3] * $px + $inverse[4] * $py + $inverse[5]) / $den;
+            if ($u < 0 || $u > 1 || $v < 0 || $v > 1) continue;
+            if ($flip) $u = 1 - $u;
+            $color = imagecolorat($sample, min(imagesx($sample) - 1, (int) ($u * imagesx($sample))), min(imagesy($sample) - 1, (int) ($v * imagesy($sample))));
+            if ((($color >> 24) & 127) < 127) imagesetpixel($canvas, $x, $y, $color);
+        }
+        imagedestroy($sample);
     }
 
     /** Reject generated frames that materially alter pixels outside the intended item box. */

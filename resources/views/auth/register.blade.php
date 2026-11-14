@@ -4,7 +4,7 @@
 @section('content')
 <div class="auth-layout compact">
     <section class="auth-story" aria-labelledby="auth-story-title">
-        <a class="guest-brand" href="{{ route('home') }}" aria-label="FurniCraft home"><span class="brand-mark" aria-hidden="true">F</span> FurniCraft</a>
+        <a class="guest-brand" href="{{ route('home') }}" aria-label="FurniCraft home"><img class="auth-brand-logo" src="{{ asset('images/optimized/lance-logo-circle-64.webp') }}" srcset="{{ asset('images/optimized/lance-logo-circle-64.webp') }} 1x, {{ asset('images/optimized/lance-logo-circle-128.webp') }} 2x" width="56" height="56" alt=""><span>FurniCraft<small>Lance Furniture Shop</small></span></a>
         <div class="auth-story-copy">
             <p class="section-kicker">Customer account</p>
             <h1 id="auth-story-title">Plan your space with confidence.</h1>
@@ -36,16 +36,17 @@
                         @error('last_name')<div class="invalid-feedback" id="last-name-error">{{ $message }}</div>@enderror
                     </div>
                 </div>
+                <p class="form-text mb-0" id="optional-account-details">Birthdate and gender are optional account details. They are not used to verify your account or rank furniture.</p>
                 <div class="row g-3">
                     <div class="col-sm-6">
-                        <label class="form-label" for="birthdate">Birthdate</label>
-                        <input class="form-control @error('birthdate') is-invalid @enderror" id="birthdate" type="date" name="birthdate" value="{{ old('birthdate') }}" max="{{ now()->format('Y-m-d') }}" required autocomplete="bday" aria-describedby="birthdate-error">
+                        <label class="form-label" for="birthdate">Birthdate <span class="text-muted">(optional)</span></label>
+                        <input class="form-control @error('birthdate') is-invalid @enderror" id="birthdate" type="date" name="birthdate" value="{{ old('birthdate') }}" max="{{ now()->format('Y-m-d') }}" autocomplete="bday" aria-describedby="optional-account-details birthdate-error">
                         @error('birthdate')<div class="invalid-feedback" id="birthdate-error">{{ $message }}</div>@enderror
                     </div>
                     <div class="col-sm-6">
-                        <label class="form-label" for="gender">Gender</label>
-                        <select class="form-select @error('gender') is-invalid @enderror" id="gender" name="gender" required aria-describedby="gender-error">
-                            <option value="" disabled @selected(old('gender') === null)>Select gender</option>
+                        <label class="form-label" for="gender">Gender <span class="text-muted">(optional)</span></label>
+                        <select class="form-select @error('gender') is-invalid @enderror" id="gender" name="gender" aria-describedby="optional-account-details gender-error">
+                            <option value="" @selected(!old('gender'))>Leave blank</option>
                             <option value="female" @selected(old('gender') === 'female')>Female</option>
                             <option value="male" @selected(old('gender') === 'male')>Male</option>
                             <option value="non_binary" @selected(old('gender') === 'non_binary')>Non-binary</option>
@@ -60,9 +61,10 @@
                     @error('email')<div class="invalid-feedback" id="register-email-error">{{ $message }}</div>@enderror
                 </div>
                 <div>
-                    <label class="form-label" for="phone">Mobile number <span class="text-muted">(optional)</span></label>
-                    <input class="form-control @error('phone') is-invalid @enderror" id="phone" type="tel" name="phone" value="{{ old('phone') }}" placeholder="+63 917 123 4567" maxlength="32" autocomplete="tel" inputmode="tel" aria-describedby="phone-hint phone-error">
-                    <div class="form-text" id="phone-hint">Philippines: +63 followed by your 10-digit mobile number (omit the starting 0).</div>
+                    <label class="form-label" for="phone">Mobile number</label>
+                    @php($phoneValue = old('phone'))
+                    <input class="form-control @error('phone') is-invalid @enderror" id="phone" type="tel" name="phone" value="{{ is_string($phoneValue) ? $phoneValue : '' }}" placeholder="0917 123 4567" maxlength="32" autocomplete="tel" inputmode="tel" required aria-describedby="phone-hint phone-error">
+                    <div class="form-text" id="phone-hint">Required so the shop can contact you about reservations. Use 0917 123 4567 or +63 917 123 4567. We save it in +63 format.</div>
                     @error('phone')<div class="invalid-feedback" id="phone-error">{{ $message }}</div>@enderror
                 </div>
                 <div class="row g-3">
@@ -77,7 +79,8 @@
                         <input class="form-control" id="password_confirmation" type="password" name="password_confirmation" minlength="10" required autocomplete="new-password">
                     </div>
                 </div>
-                <button class="btn btn-primary btn-lg w-100" type="submit">Create account</button>
+                <p class="form-text mb-0" id="registration-privacy-notice">We use your name and email to create and verify your account. Your mobile number is required so the shop can contact you about reservation requests. Read our <a href="{{ route('privacy-policy') }}" target="_blank" rel="noopener">Privacy notice <span class="visually-hidden">(opens in a new tab)</span></a> for how your information is used and how to request deletion.</p>
+                <button class="btn btn-primary btn-lg w-100" type="submit" aria-describedby="registration-privacy-notice">Create account</button>
             </form>
             <p class="auth-switch">Already registered? <a href="{{ route('login') }}">Sign in</a></p>
         </div>

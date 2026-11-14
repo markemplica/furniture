@@ -49,11 +49,11 @@ class ChatController extends Controller
         } else {
             $answer = $gemini->chat($recommendation->load('items.product'), $data['message']);
         }
-        $source = $answer['source'] ?? ($answer['used'] ? 'gemini' : 'local-fallback');
+        $source = $answer['source'] ?? ($answer['used'] ? \App\Services\AiProvider::name() : 'local-fallback');
         ChatMessage::create(['user_id' => $request->user()->id, 'recommendation_id' => $recommendation->id, 'role' => 'assistant', 'message' => $answer['text'], 'gemini_used' => $answer['used'], 'ai_source' => $source]);
 
         $notice = match ($source) {
-            'local-fallback' => 'Gemini is temporarily unavailable. FurniCraft replied using local catalog guidance.',
+            'local-fallback' => 'AI is temporarily unavailable. FurniCraft replied using local catalog guidance.',
             'catalog-rule' => 'FurniCraft replied using current catalog listings. Physical availability still needs confirmation with Lance Furniture Shop.',
             default => 'FurniCraft replied to your question.',
         };

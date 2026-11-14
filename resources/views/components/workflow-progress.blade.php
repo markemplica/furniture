@@ -3,7 +3,7 @@
     $steps = [
         1 => ['Preferences', 'Furniture type and details'],
         2 => ['Room & generate', 'Image analysis and matching'],
-        3 => ['AI matches', 'Ranked results and chatbot'],
+        3 => ['Ranked matches', 'Catalog results and chatbot'],
         4 => ['Reservation', 'Administrator review'],
     ];
 @endphp

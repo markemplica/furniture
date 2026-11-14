@@ -33,7 +33,7 @@ class RoomPreviewV2Controller extends Controller
             RoomImage::whereKey($roomImage->id)->lockForUpdate()->firstOrFail();
             $hash = $roomImage->image_sha256 ?: $photos->metadata($roomImage->image_path)['sha256'];
             $version = (string) config('roompreview.pipeline_version', 'v2');
-            $cacheKey = hash('sha256', implode('|', [$hash, $product->id, $product->updated_at?->toISOString(), $version]));
+            $cacheKey = hash('sha256', implode('|', [$hash, $product->id, $product->updated_at?->toISOString(), $version, \App\Services\RoomPreviewV2Service::PLACEMENT_VERSION]));
             $generation = RoomPreviewGeneration::firstOrNew([
                 'room_image_id' => $roomImage->id,
                 'furniture_product_id' => $product->id,

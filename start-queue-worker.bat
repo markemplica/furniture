@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
-"C:\xampp\php\php.exe" artisan queue:work --tries=3 --timeout=540
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-system.ps1" -WorkersOnly
 pause

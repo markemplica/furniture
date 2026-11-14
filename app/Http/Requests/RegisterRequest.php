@@ -2,11 +2,14 @@
 
 namespace App\Http\Requests;
 
+use App\Support\NormalizesPhilippineMobileNumber;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rules\Password;
 
 class RegisterRequest extends FormRequest
 {
+    use NormalizesPhilippineMobileNumber;
+
     public function authorize(): bool
     {
         return true;
@@ -18,10 +21,10 @@ class RegisterRequest extends FormRequest
             'first_name' => ['required', 'string', 'max:50'],
             'middle_name' => ['nullable', 'string', 'max:50'],
             'last_name' => ['required', 'string', 'max:50'],
-            'birthdate' => ['required', 'date_format:Y-m-d', 'before:today'],
-            'gender' => ['required', 'in:male,female,non_binary,prefer_not_to_say'],
+            'birthdate' => ['nullable', 'date_format:Y-m-d', 'before:today'],
+            'gender' => ['nullable', 'string', 'in:male,female,non_binary,prefer_not_to_say'],
             'email' => ['required', 'email', 'max:255', 'unique:users'],
-            'phone' => ['nullable', 'string', 'max:32'],
+            'phone' => $this->mobileNumberRules(),
             'password' => ['required', 'confirmed', Password::defaults()],
         ];
     }

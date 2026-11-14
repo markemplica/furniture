@@ -19,6 +19,10 @@ class RoomStoreRequest extends FormRequest
             'room_depth_m' => ['nullable', 'numeric', 'min:1', 'max:50', 'required_with:room_width_m'],
             'return_to' => ['nullable', 'in:recommendations'],
             'gemini_consent' => ['nullable', 'boolean'],
+            'ai_consent_provider' => [
+                \Illuminate\Validation\Rule::requiredIf(fn () => \App\Services\AiProvider::name() === 'groq' && $this->boolean('gemini_consent')),
+                \Illuminate\Validation\Rule::in([\App\Services\AiProvider::name()]),
+            ],
         ];
     }
 }

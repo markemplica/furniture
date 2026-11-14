@@ -6,17 +6,23 @@ use App\Models\FurnitureProduct;
 use App\Models\RoomImage;
 use App\Models\RoomPreviewAnalysis;
 use App\Models\RoomPreviewGeneration;
-use App\Services\PrivacyAudit;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
 
 class RoomPreviewV2Service
 {
+    public const PLACEMENT_VERSION = 'photo-2d-placement-v5';
+
     private int $providerCallStart = 0;
+
     private int $previousProviderCalls = 0;
+
     public function __construct(
         private GeminiService $gemini,
         private RoomPhotoService $photos,
@@ -26,20 +32,25 @@ class RoomPreviewV2Service
         private PrivacyAudit $audit,
     ) {}
 
-    public function process(int $generationId): void
+    public function process(int $generationId, ?string $expectedCacheKey = null): void
     {
         $started = hrtime(true);
         $this->providerCallStart = $this->gemini->providerCallCount();
         $generation = RoomPreviewGeneration::find($generationId);
-        if (! $generation) return;
+        if (! $generation || in_array($generation->status, ['completed', 'fallback', 'failed', 'cancelled'], true)
+            || ($expectedCacheKey !== null && $generation->cache_key !== $expectedCacheKey)) {
+            return;
+        }
         $room = RoomImage::find($generation->room_image_id);
         $product = FurnitureProduct::find($generation->furniture_product_id);
         if (! $room || ! $product || $product->status !== 'active') {
             $this->finish($generation, 'failed', 'catalog_item_unavailable', 'The selected catalog item is inactive or unavailable.');
+
             return;
         }
         if (! $this->photos->exists($room->image_path)) {
             $this->finish($generation, 'failed', 'room_photo_missing', 'The room photo is no longer available.');
+
             return;
         }
 
@@ -48,107 +59,94 @@ class RoomPreviewV2Service
         $this->gemini->limitProviderRequests(max(0, (int) config('roompreview.max_provider_calls', 8) - $this->previousProviderCalls));
         $providerCalls = 0;
         $tempPath = null;
+        $previousActor = Context::getHidden('ai_user_id');
 
         try {
+            Context::addHidden('ai_user_id', $room->user_id);
             $source = $this->photos->get($room->image_path);
-            if (strlen($source) > (int) config('roompreview.max_upload_bytes')) throw new \RuntimeException('image_too_large');
+            if (strlen($source) > (int) config('roompreview.max_upload_bytes')) {
+                throw new \RuntimeException('image_too_large');
+            }
             $normalized = $this->raster->normalize($source);
-            $temporaryExtension = match ($normalized['mime']) { 'image/jpeg', 'image/jpg' => 'jpg', 'image/webp' => 'webp', default => 'png' };
+            $temporaryExtension = match ($normalized['mime']) {
+                'image/jpeg', 'image/jpg' => 'jpg', 'image/webp' => 'webp', default => 'png'
+            };
             $tempPath = 'rooms/'.$room->user_id.'/tmp/v2-'.Str::uuid().'.'.$temporaryExtension;
             $this->photos->storeGenerated($tempPath, $normalized['bytes']);
 
-            $analysis = $room->analysis ?? [];
-            $analysisCache = null;
             $room->refresh();
-            if ($room->gemini_consent_at) {
-                $hash = hash('sha256', $normalized['bytes']);
-                $version = (string) config('roompreview.pipeline_version', 'v2');
-                $analysisCache = RoomPreviewAnalysis::firstOrCreate(
-                    ['image_sha256' => $hash, 'pipeline_version' => $version],
-                    ['status' => 'queued', 'attempts' => 0],
-                );
-                if ($analysisCache->status === 'completed' && is_array($analysisCache->analysis)) {
-                    $analysis = $analysisCache->analysis;
-                } else {
-                    $analysisCache->update(['status' => 'processing', 'attempts' => $analysisCache->attempts + 1]);
-                    $this->audit->record('room_photo_sent_to_gemini', 'room_image', $room->id, ['purpose' => 'room_preview_v2_analysis'], $room->user_id);
-                    // Shared geometry must not depend on one customer's measurements or selected item.
-                    try {
-                        $analysis = $this->gemini->analyzeRoom($tempPath, null, null, 'all catalog furniture', true);
-                    } catch (Throwable $exception) {
-                        Log::warning('Preview geometry unavailable; trying photo-based generation', ['exception' => get_class($exception)]);
-                        $analysis = $this->gemini->roomFallback(null, null, 'all catalog furniture');
-                    }
-                    $wasAnalyzedByGemini = (bool) ($analysis['gemini_used'] ?? false);
-                    if ($wasAnalyzedByGemini && $this->hasConsent($room->id)) {
-                        $providerCalls += 2;
-                        $analysisCache->update(['status' => 'completed', 'analysis' => $analysis, 'analyzed_at' => now(), 'failure_code' => null]);
-                    } else {
-                        if ($wasAnalyzedByGemini) {
-                            $analysis = $this->gemini->roomFallback($room->room_width_m ? (float) $room->room_width_m : null, $room->room_depth_m ? (float) $room->room_depth_m : null, 'all catalog furniture');
-                        }
-                        $analysisCache->update(['status' => 'fallback', 'analysis' => null, 'failure_code' => $wasAnalyzedByGemini ? 'consent_revoked' : 'analysis_unavailable']);
-                    }
-                }
-            }
+            [$analysis, $analysisFailure] = $this->analysisFor($room, $room->image_sha256 ?: hash('sha256', $source), $tempPath);
 
-            // Keep catalog dimensions authoritative; AI geometry is a placement aid only.
+            // Preview width follows the visible clear zone; catalogue dimensions remain reference data.
             $roomWidth = null;
             $roomDepth = null;
             $placement = $this->placement->forProduct($analysis, $product, $roomWidth, $roomDepth);
-            $placement = $this->calibratePerspectiveScale($placement, $analysis, $product, $normalized['width']);
-            $confidence = max(0.0, min(1.0, ((float) ($placement['score'] ?? 0)) / 100));
-            $label = $confidence >= 0.85 ? 'high' : ($confidence >= 0.65 ? 'medium' : 'rough_estimate');
+            $confidence = max(0.0, min(1.0, ((float) ($placement['confidence_score'] ?? $placement['score'] ?? 0)) / 100));
+            $label = $confidence >= 0.75 ? 'high' : ($confidence >= 0.5 ? 'medium' : 'rough_estimate');
             $quality = $normalized['quality'];
 
             if (is_array($quality) && ! ($quality['usable'] ?? false)) {
                 $this->savePlacementFallback($generation, $placement, $confidence, $label, 'photo_quality_low', $started, $providerCalls);
+
+                return;
+            }
+
+            if (($placement['renderable'] ?? true) === false) {
+                $this->savePlacementFallback($generation, $placement, 0, 'rough_estimate', 'no_safe_placement', $started, $providerCalls);
+
                 return;
             }
 
             $artifact = null;
+            $localArtifact = $this->raster->composite($normalized['bytes'], $product, $placement);
+            if (is_array($localArtifact['bounds'] ?? null)) {
+                [$left, $top, $right, $bottom] = $localArtifact['bounds'];
+                $placement['bounds_percent'] = [100 * $left / $normalized['width'], 100 * $top / $normalized['height'], 100 * $right / $normalized['width'], 100 * $bottom / $normalized['height']];
+            }
             $verifiedByAi = false;
-            $aiFailureCode = null;
+            $aiFailureCode = $analysisFailure;
             $verification = null;
             $guard = null;
-            if ($room->gemini_consent_at && $this->gemini->isConfigured()) {
+            if (! $analysisFailure && AiProvider::name() === 'gemini' && $room->gemini_consent_at && $this->gemini->isConfigured()) {
                 for ($attempt = 0; $attempt < min(3, (int) config('roompreview.max_generation_attempts', 3)); $attempt++) {
-                    if (! $this->hasConsent($room->id)) break;
-                    $this->audit->record('room_photo_sent_to_gemini', 'room_image', $room->id, ['purpose' => 'room_preview_v2_generation'], $room->user_id);
+                    if (! $this->hasConsent($room->id)) {
+                        break;
+                    }
+                    \Illuminate\Support\Facades\Context::addHidden('ai_photo_transfer', ['room_id' => $room->id, 'purpose' => 'room_preview_v2_generation', 'user_id' => $room->user_id]);
                     try {
-                        $generated = $this->gemini->furnishRoom($tempPath, $product, true, 1, 0);
-                    } catch (AiRequestBudgetExceeded | \Illuminate\Http\Client\ConnectionException | \Illuminate\Http\Client\RequestException $exception) {
-                        $httpStatus = $exception instanceof \Illuminate\Http\Client\RequestException ? $exception->response->status() : null;
-                        $aiFailureCode = $exception instanceof AiRequestBudgetExceeded || $httpStatus === 429
-                            ? 'ai_request_limit_reached'
-                            : ($httpStatus === 403 ? 'ai_access_denied' : 'ai_generation_unavailable');
+                        $generated = $this->gemini->furnishRoom($tempPath, $product, true, 1, 0, $placement);
+                    } catch (AiRequestBudgetExceeded|ConnectionException|RequestException $exception) {
+                        $httpStatus = $exception instanceof RequestException ? $exception->response->status() : null;
+                        $aiFailureCode = $this->failureCode($exception, 'ai_generation_unavailable');
                         Log::warning('AI preview generation unavailable; using local estimate', [
                             'generation_id' => $generation->id,
                             'exception' => get_class($exception),
-                            'http_status' => $exception instanceof \Illuminate\Http\Client\RequestException ? $exception->response->status() : null,
+                            'http_status' => $exception instanceof RequestException ? $exception->response->status() : null,
                         ]);
                         break;
                     }
                     $providerCalls += 1;
-                    if (! is_string($generated['bytes'] ?? null) || $generated['bytes'] === '') continue;
-                    if (! $this->hasConsent($room->id)) continue;
-                    $this->audit->record('room_photo_sent_to_gemini', 'room_image', $room->id, ['purpose' => 'room_preview_v2_verification'], $room->user_id);
+                    if (! is_string($generated['bytes'] ?? null) || $generated['bytes'] === '') {
+                        continue;
+                    }
+                    if (! $this->hasConsent($room->id)) {
+                        continue;
+                    }
+                    \Illuminate\Support\Facades\Context::addHidden('ai_photo_transfer', ['room_id' => $room->id, 'purpose' => 'room_preview_v2_verification', 'user_id' => $room->user_id]);
                     try {
                         $verification = $this->gemini->verifyGeneratedRoom($tempPath, $generated['bytes'], $product, 1);
-                    } catch (AiRequestBudgetExceeded | \Illuminate\Http\Client\ConnectionException | \Illuminate\Http\Client\RequestException $exception) {
-                        $httpStatus = $exception instanceof \Illuminate\Http\Client\RequestException ? $exception->response->status() : null;
-                        $aiFailureCode = $exception instanceof AiRequestBudgetExceeded || $httpStatus === 429
-                            ? 'ai_request_limit_reached'
-                            : ($httpStatus === 403 ? 'ai_access_denied' : 'ai_verification_unavailable');
+                    } catch (AiRequestBudgetExceeded|ConnectionException|RequestException $exception) {
+                        $httpStatus = $exception instanceof RequestException ? $exception->response->status() : null;
+                        $aiFailureCode = $this->failureCode($exception, 'ai_verification_unavailable');
                         Log::warning('AI preview verification unavailable; using local estimate', [
                             'generation_id' => $generation->id,
                             'exception' => get_class($exception),
-                            'http_status' => $exception instanceof \Illuminate\Http\Client\RequestException ? $exception->response->status() : null,
+                            'http_status' => $exception instanceof RequestException ? $exception->response->status() : null,
                         ]);
                         break;
                     }
                     $providerCalls += 1;
-                    $bounds = $this->expectedBounds($placement, $product, $normalized['width'], $normalized['height']);
+                    $bounds = $localArtifact['guard_bounds'] ?? $localArtifact['bounds'] ?? $this->expectedBounds($placement, $product, $normalized['width'], $normalized['height']);
                     $guard = $this->raster->pixelGuard($normalized['bytes'], $generated['bytes'], $bounds);
                     if (($verification['passed'] ?? false) && ($guard['supported'] ?? false) && ($guard['passed'] ?? false)) {
                         $artifact = ['bytes' => $generated['bytes'], 'mime' => $generated['mime_type'] ?? 'image/png'];
@@ -165,17 +163,20 @@ class RoomPreviewV2Service
             }
 
             if (! $artifact) {
-                $artifact = $this->raster->composite($normalized['bytes'], $product, $placement);
+                $artifact = $localArtifact;
                 // Rejected AI checks do not describe the saved local composite.
                 $verification = null;
                 $guard = null;
             }
             if (! $artifact) {
                 $this->savePlacementFallback($generation, $placement, $confidence, $label, $this->raster->available() ? 'preview_composite_unavailable' : 'gd_extension_missing', $started, $providerCalls);
+
                 return;
             }
 
-            $artifactExtension = match ($artifact['mime'] ?? 'image/png') { 'image/jpeg', 'image/jpg' => 'jpg', 'image/webp' => 'webp', default => 'png' };
+            $artifactExtension = match ($artifact['mime'] ?? 'image/png') {
+                'image/jpeg', 'image/jpg' => 'jpg', 'image/webp' => 'webp', default => 'png'
+            };
             $path = 'rooms/'.$room->user_id.'/previews/v2-'.$generation->id.'-'.$generation->cache_key.'.'.$artifactExtension;
             $placementData = [
                 'pipeline' => 'v2',
@@ -189,12 +190,23 @@ class RoomPreviewV2Service
                 'image_quality' => $quality,
             ];
             DB::transaction(function () use ($room, $generation, $path, $artifact, $placementData, $verifiedByAi, $aiFailureCode, $confidence, $label, $started, $providerCalls, $quality, $verification, $guard): void {
-                $currentRoom = RoomImage::whereKey($room->id)->lockForUpdate()->firstOrFail();
-                if ($verifiedByAi && ! $currentRoom->gemini_consent_at) throw new \RuntimeException('consent_revoked');
+                $currentRoom = RoomImage::whereKey($room->id)->lockForUpdate()->first();
+                $currentGeneration = RoomPreviewGeneration::whereKey($generation->id)->lockForUpdate()->first();
+                if (! $currentRoom || ! $currentGeneration || $currentGeneration->status === 'cancelled'
+                    || $currentGeneration->cache_key !== $generation->cache_key) {
+                    return;
+                }
+                if ($currentRoom->gemini_consent_at != $room->gemini_consent_at) {
+                    throw new \RuntimeException('consent_revoked');
+                }
                 $this->photos->storeGenerated($path, $artifact['bytes']);
                 $fallbackMessage = match ($aiFailureCode) {
                     'ai_access_denied' => 'Gemini access was denied. A local 2D planning preview is shown; ask the system administrator to check the API key and project permissions before retrying.',
                     'ai_request_limit_reached' => 'Gemini has reached its request limit. A local 2D planning preview is shown; wait a few minutes before retrying.',
+                    'provider_call_budget_exhausted' => 'This preview reached FurniCraft’s processing limit. A local 2D planning preview is shown.',
+                    'application_ai_budget_exhausted' => 'FurniCraft has reached its configured AI usage limit. A local 2D planning preview is shown.',
+                    'analysis_in_progress' => 'Room analysis is already running. A local 2D estimate is shown while it finishes.',
+                    'analysis_unavailable' => 'Room analysis is unavailable. A local 2D planning estimate is shown; you can retry the room analysis.',
                     default => 'A local 2D planning preview is ready; verify real measurements.',
                 };
                 $this->finish($generation, $verifiedByAi ? 'completed' : 'fallback', $aiFailureCode,
@@ -204,6 +216,7 @@ class RoomPreviewV2Service
         } catch (Throwable $exception) {
             if ($exception->getMessage() === 'consent_revoked') {
                 $this->finish($generation, 'cancelled', 'consent_revoked', 'AI processing was disabled before the preview could be saved.');
+
                 return;
             }
             $code = preg_match('/^[a-z0-9_]{1,100}$/', $exception->getMessage()) ? $exception->getMessage() : 'preview_pipeline_error';
@@ -211,51 +224,90 @@ class RoomPreviewV2Service
             $this->finish($generation, 'failed', $code, 'The room preview could not be completed. Please check the photo and try again.', metrics: $this->metrics($started, $providerCalls, null, null, null));
             throw $exception;
         } finally {
+            Context::forgetHidden('ai_photo_transfer');
+            $previousActor === null ? Context::forgetHidden('ai_user_id') : Context::addHidden('ai_user_id', $previousActor);
             $this->gemini->clearProviderRequestLimit();
-            if ($tempPath) $this->photos->deleteGenerated($tempPath);
+            if ($tempPath) {
+                $this->photos->deleteGenerated($tempPath);
+            }
         }
     }
 
     /** Fit catalog width to the image perspective using reliable known-size clues: s(y)=k*(y-horizon_y). */
     private function hasConsent(int $roomImageId): bool
     {
-        return RoomImage::whereKey($roomImageId)->whereNotNull('gemini_consent_at')->exists();
+        $room = RoomImage::find($roomImageId);
+        return $room !== null && AiProvider::hasPhotoConsent($room);
     }
 
-    private function calibratePerspectiveScale(array $placement, array $analysis, FurnitureProduct $product, int $imageWidth): array
+    private function failureCode(Throwable $exception, string $fallback): string
     {
-        if (str_contains(strtolower($product->recommendationType()), 'door') || ! $product->width_cm || $imageWidth < 1) return $placement;
-        $geometry = $analysis['vision_geometry'] ?? [];
-        $horizon = is_numeric($geometry['horizon_y'] ?? null) ? (float) $geometry['horizon_y'] : null;
-        if ($horizon === null || $horizon < 0 || $horizon >= 0.9) return $placement;
-        $baseY = max(0.0, min(1.0, (float) ($placement['y_percent'] ?? 86) / 100));
-        if ($baseY <= $horizon) return $placement;
-
-        $measurements = [];
-        foreach (array_slice(is_array($geometry['scale_clues'] ?? null) ? $geometry['scale_clues'] : [], 0, 12) as $clue) {
-            $pixelHeight = (float) ($clue['pixel_height'] ?? 0);
-            $realCm = (float) ($clue['typical_real_cm'] ?? 0);
-            $clueBase = (float) ($clue['base_y'] ?? 0);
-            $reliability = max(0.0, min(1.0, (float) ($clue['reliability'] ?? 0)));
-            if ($pixelHeight <= 0 || $realCm <= 0 || $reliability < 0.55 || $clueBase <= $horizon || $clueBase > 1) continue;
-
-            $k = $pixelHeight / ($realCm * ($clueBase - $horizon));
-            $predictedPixels = (float) $product->width_cm * $k * ($baseY - $horizon);
-            $percent = 100 * $predictedPixels / $imageWidth;
-            $capacity = max(1.0, min(90.0, (float) ($placement['max_width_percent'] ?? 65)));
-            if ($percent >= 1 && $percent <= $capacity) $measurements[] = [$percent, $reliability];
+        if ($exception instanceof AiAggregateBudgetExceeded) {
+            return 'application_ai_budget_exhausted';
         }
-        if ($measurements === []) return $placement;
-
-        $weightedPixels = 0.0; $weight = 0.0;
-        foreach ($measurements as [$percent, $reliability]) {
-            $weightedPixels += $percent * $reliability;
-            $weight += $reliability;
+        if ($exception instanceof AiRequestBudgetExceeded) {
+            return 'provider_call_budget_exhausted';
         }
-        $capacity = max(1.0, min(90.0, (float) ($placement['max_width_percent'] ?? 65)));
-        $placement['max_width_percent'] = round(max(1.0, min($capacity, $weightedPixels / max(0.01, $weight))), 1);
-        $placement['scale_basis'] = 'reliability-weighted-perspective-clues';
-        return $placement;
+        $status = $exception instanceof RequestException ? $exception->response->status() : null;
+
+        return match ($status) {
+            429 => 'ai_request_limit_reached', 403 => 'ai_access_denied', default => $fallback
+        };
+    }
+
+    private function analysisFor(RoomImage $room, string $hash, string $path): array
+    {
+        $analysis = $room->analysis ?? [];
+        if (! AiProvider::hasPhotoConsent($room) || ! $this->gemini->isConfigured()) {
+            return [$analysis, null];
+        }
+
+        // Upload analysis is already photo-only; reuse it instead of analyzing the same photo again.
+        if ($room->analysis_status === 'completed' && ($analysis['gemini_used'] ?? false)
+            && ($analysis['analyzed_furniture_type'] ?? null) === 'all catalog furniture'
+            && (int) ($analysis['placement_profile_version'] ?? 0) >= 2) {
+            return [$analysis, null];
+        }
+        if (in_array($room->analysis_status, ['queued', 'processing', 'retrying'], true)) {
+            return [$analysis, 'analysis_in_progress'];
+        }
+
+        $version = (string) config('roompreview.pipeline_version', 'v2').(AiProvider::name() === 'groq' ? '-groq-v1' : '');
+        $lock = Cache::lock('room-analysis:'.$hash.':'.$version, 240);
+        if (! $lock->get()) {
+            return [$analysis, 'analysis_in_progress'];
+        }
+        try {
+            $cache = RoomPreviewAnalysis::firstOrCreate(['image_sha256' => $hash, 'pipeline_version' => $version], ['status' => 'queued', 'attempts' => 0]);
+            if ($cache->status === 'completed' && is_array($cache->analysis)) {
+                return [$cache->analysis, null];
+            }
+            if ($cache->status === 'fallback' && $cache->updated_at->gt(now()->subMinute())) {
+                return [$analysis, $cache->failure_code ?: 'analysis_unavailable'];
+            }
+            $cache->update(['status' => 'processing', 'attempts' => $cache->attempts + 1]);
+            if (! $this->hasConsent($room->id)) {
+                return [$this->gemini->roomFallback(null, null, 'all catalog furniture'), 'consent_revoked'];
+            }
+            \Illuminate\Support\Facades\Context::addHidden('ai_photo_transfer', ['room_id' => $room->id, 'purpose' => 'room_preview_v2_analysis', 'user_id' => $room->user_id]);
+            try {
+                $result = $this->gemini->analyzeRoom($path, null, null, 'all catalog furniture', true);
+                if (($result['gemini_used'] ?? false) && $this->hasConsent($room->id)) {
+                    $cache->update(['status' => 'completed', 'analysis' => $result, 'analyzed_at' => now(), 'failure_code' => null]);
+
+                    return [$result, null];
+                }
+                $failure = 'analysis_unavailable';
+            } catch (Throwable $exception) {
+                $failure = $this->failureCode($exception, 'analysis_unavailable');
+                Log::warning('Preview geometry unavailable', ['exception' => $exception::class, 'failure_code' => $failure]);
+            }
+            $cache->update(['status' => 'fallback', 'analysis' => null, 'failure_code' => $failure]);
+
+            return [$this->gemini->roomFallback(null, null, 'all catalog furniture'), $failure];
+        } finally {
+            $lock->release();
+        }
     }
 
     private function savePlacementFallback(RoomPreviewGeneration $generation, array $placement, float $confidence, string $label, string $failureCode, int $started, int $calls): void
@@ -265,17 +317,32 @@ class RoomPreviewV2Service
             'disclaimer' => 'This preview is a visual planning estimate only. It does not confirm exact dimensions, fit, or installation clearance. Measure the room and product before purchase.',
             'artifact_path' => null, 'image_quality' => null,
         ];
-        $this->finish($generation, 'fallback', $failureCode, 'Only a placement estimate is available; image rendering is not available on this server.', $data, $confidence, $label, $this->metrics($started, $calls, null, null, null));
+        $message = match ($failureCode) {
+            'no_safe_placement' => ($placement['reason'] ?? 'No clear furniture placement was detected.').' Try a clearer photo showing the floor or opening.',
+            'photo_quality_low' => 'This photo is too dark, bright, or blurred for a reliable preview. Upload a clear photo showing the usable floor or opening.',
+            default => 'Only a placement estimate is available; image rendering is not available on this server.',
+        };
+        $this->finish($generation, 'fallback', $failureCode, $message, $data, $confidence, $label, $this->metrics($started, $calls, null, null, null));
     }
 
     private function finish(RoomPreviewGeneration $generation, string $status, ?string $failureCode, ?string $message, ?array $data = null, ?float $confidence = null, ?string $label = null, ?array $metrics = null): void
     {
-        $generation->update([
-            'status' => $status, 'failure_code' => $failureCode, 'message' => $message,
-            'placement_json' => $data, 'confidence' => $confidence, 'confidence_label' => $label,
-            'metrics_json' => $metrics, 'completed_at' => now(),
-        ]);
-        $this->telemetry->record('image', 'room_preview_v2', $status === 'completed' ? 'success' : $status, fallbackUsed: $status === 'fallback', failureCode: $failureCode);
+        $saved = DB::transaction(function () use ($generation, $status, $failureCode, $message, $data, $confidence, $label, $metrics): bool {
+            $current = RoomPreviewGeneration::whereKey($generation->id)->lockForUpdate()->first();
+            if (! $current || $current->status === 'cancelled' || $current->cache_key !== $generation->cache_key) {
+                return false;
+            }
+            $current->update([
+                'status' => $status, 'failure_code' => $failureCode, 'message' => $message,
+                'placement_json' => $data, 'confidence' => $confidence, 'confidence_label' => $label,
+                'metrics_json' => $metrics, 'completed_at' => now(),
+            ]);
+
+            return true;
+        });
+        if ($saved) {
+            $this->telemetry->record('image', 'room_preview_v2', $status === 'completed' ? 'success' : $status, fallbackUsed: $status === 'fallback', failureCode: $failureCode);
+        }
     }
 
     private function metrics(int $started, int $calls, ?array $quality, ?array $verification, ?array $guard): array
@@ -297,6 +364,7 @@ class RoomPreviewV2Service
         $height = min($imageHeight * 0.92, $width * max(0.35, min(3.2, $ratio)));
         $x = max(0, min($imageWidth, $imageWidth * ((float) ($placement['x_percent'] ?? 50) / 100)));
         $bottom = max(0, min($imageHeight, $imageHeight * ((float) ($placement['y_percent'] ?? 86) / 100)));
+
         return [(int) ($x - $width / 2), (int) ($bottom - $height), (int) ($x + $width / 2), (int) $bottom];
     }
 }

@@ -7,7 +7,7 @@ FurniCraft is a Laravel web application for Lance Furniture Shop. It gives authe
 - Exactly two roles: Customer and Administrator/Owner
 - Guests can browse the home page and public catalog; customer planning, favorites, reservations, and all administrator features require sign-in
 - The protected customer flow is sign-in → save preferences → optionally upload and analyze a room photo → generate recommendations and chat → submit a reservation request
-- Content-based and collaborative recommendation scoring with an optional Gemini-generated explanation
+- Content-based and collaborative recommendation scoring with a locally generated summary
 - Gemini-assisted chatbot restricted to the current recommendation and Lance Furniture Shop catalog facts
 - The customer-facing room upload is photo-first and does not ask for room dimensions. Gemini may estimate width and depth; local planning guidance is used when AI is not authorized or unavailable. Legacy optional dimensions remain supported by the backend.
 - Gemini room analysis and furnished-room image generation run in the database queue; the preview page polls for completion and continues to show the local 2D overlay while image generation runs
@@ -62,7 +62,8 @@ Start the local application on loopback. On Windows with XAMPP, use `.\start-sys
 
 ```powershell
 php artisan serve --host=127.0.0.1 --port=8000
-php artisan queue:work --tries=3 --timeout=540
+php artisan queue:work --queue=mail --tries=3 --timeout=60
+php artisan queue:work --queue=ai,default --tries=3 --timeout=540
 php artisan schedule:work
 ```
 
@@ -73,7 +74,7 @@ Release status: the application code and deployment guidance are prepared for a 
 
 ## Public production release
 
-- Use a dedicated production database and host. Start from the production-oriented [.env.example](.env.example), replace every placeholder through the host's secret manager, and never copy a developer's `.env` or publish test credentials.
+- Use a dedicated production database and host. Start from the [production environment template](.env.production.example), replace every placeholder through the host's secret manager, and never copy a developer's `.env` or publish test credentials.
 - Set the real HTTPS `APP_URL`, `APP_ENV=production`, `APP_DEBUG=false`, secure session settings, least-privilege database credentials, real mail credentials, and `ADMIN_FEEDBACK_EMAIL`. Leave optional AI disabled until consent, privacy language, quotas, and billing are approved.
 - Import and verify the shop's approved product catalog and images through the admin interface; sample/demo seed data is never loaded into production.
 - Have the privacy notice and reservation terms reviewed for the real deployment, including the shop's privacy contact, data handling, and retention practices.
@@ -86,7 +87,7 @@ Release status: the application code and deployment guidance are prepared for a 
 - Use a maintained PHP 8.2+ host with required Laravel extensions, MySQL/MariaDB, HTTPS, and a web server whose document root is the app's `public` directory.
 - Create a dedicated least-privilege database user. Configure deployment environment variables with `APP_ENV=production`, `APP_DEBUG=false`, the HTTPS `APP_URL`, a generated stable `APP_KEY`, MySQL credentials, a real delivery mailer, and `QUEUE_CONNECTION=database` with `DB_QUEUE_RETRY_AFTER=600`.
 - Keep `storage/app/private` persistent, writable by the app, outside the web root, and included in encrypted backups. Never expose `.env`, database dumps, logs, or private room photos from the web server.
-- Run migrations as a release step with `php artisan migrate --force`. Do not run `migrate:fresh` on a live database. Keep a supervised queue worker running with `php artisan queue:work --tries=3 --timeout=540`; restart it after deployments. Run `php artisan schedule:run` every minute through the host scheduler so retention jobs execute.
+- Run migrations as a release step with `php artisan migrate --force`. Do not run `migrate:fresh` on a live database. Supervise separate mail and AI workers using the commands above, and restart both after deployments. Run `php artisan schedule:run` every minute through the host scheduler so retention and recovery tasks execute.
 - Before opening traffic, run `php artisan system:readiness` and review the administrator’s Deployment readiness page. Also verify real email delivery, `/up`, queue processing, logs, and TLS from outside the host; the readiness command cannot prove those external behaviors.
 
 ### Backup and restore procedure
@@ -107,7 +108,7 @@ The built-in `/up` endpoint is a basic application health check. `/health` check
 
 ## Gemini configuration
 
-The recommendation algorithm, chatbot, and room workflow have deterministic local fallbacks, so the system remains usable without an API key. To enable Gemini, add these values to `.env`:
+Recommendation ranking and summaries run locally. Room analysis and previews have local fallbacks, and the chatbot can use local catalog answers, so the system remains usable without an API key. To enable Gemini for consented room-photo analysis, furnished-room previews, and chatbot answers, add these values to `.env`:
 
 ```env
 GEMINI_API_KEY=your_key_here
@@ -117,7 +118,7 @@ GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
 GEMINI_IMAGE_FALLBACK_MODEL=gemini-2.5-flash-image
 ```
 
-The model name is configurable so it can be changed without modifying application code. The hybrid recommendation ranking is computed by FurniCraft; Gemini receives the ranked, in-system product facts to explain results. Chat prompts explicitly limit answers to the supplied catalog and recommendation data.
+The model name is configurable so it can be changed without modifying application code. FurniCraft computes hybrid recommendation rankings and summaries locally. Generating recommendations does not call Gemini. When a customer asks a chatbot question that needs an AI answer, Gemini may receive the question and relevant recommended-product and active-catalog facts. Chat prompts explicitly limit answers to that supplied data.
 
 ## Email configuration
 
@@ -136,7 +137,7 @@ ADMIN_FEEDBACK_EMAIL=admin@example.com
 QUEUE_CONNECTION=database
 ```
 
-Keep `php artisan queue:work` running so queued mail is delivered. On Linux hosts, configure the scheduler to run every minute, for example `* * * * * cd /path/to/app && php artisan schedule:run >> /dev/null 2>&1`.
+Keep the dedicated mail and AI workers running using the commands above. The Windows queue-worker helper starts both workers. On Linux hosts, configure the scheduler to run every minute, for example `* * * * * cd /path/to/app && php artisan schedule:run >> /dev/null 2>&1`.
 
 ## Test and quality commands
 
@@ -154,7 +155,7 @@ The feature suite verifies public and protected access, required preferences and
 - Reset codes are never stored in plaintext.
 - Individual view and favorite events are used for recommendations and aggregate ranking; the customer interface does not expose another customer’s activity.
 - Configure HTTPS, production mail, backups, retention rules, and a privacy notice before real customer use.
-- Room-photo AI processing requires an explicit per-upload opt-in; unconsented images use local guidance only. New photos and generated previews are privately stored, metadata-stripped, and scheduled for removal after `ROOM_IMAGE_RETENTION_DAYS` (default 30).
+- Room-photo AI processing requires an explicit per-upload opt-in; unconsented images use local guidance only. New photos and generated previews are privately stored, metadata-stripped, and scheduled for removal after `ROOM_IMAGE_RETENTION_DAYS` (configuration/template default 90; existing deployments retain their configured value).
 - The retention task is scheduled in Laravel. Run `php artisan schedule:work` locally, or configure the standard Laravel scheduler cron entry in production; also run `php artisan room-images:secure-legacy` once after upgrading older installations.
 - The privacy notice describes the application’s controls and external Gemini transfer. It is not a certification or legal compliance determination.
 
@@ -179,3 +180,5 @@ Room analyses are stored in room_images.analysis and cached by the processed pho
 Run the deterministic geometry unit checks with npm run test:room-preview. The existing Laravel feature suite is run with php artisan test. Gemini settings remain in the existing .env keys GEMINI_API_KEY, GEMINI_MODEL, and GEMINI_FALLBACK_MODEL; the API key is only read by the server.
 
 Known limitations: a single room photo cannot reveal exact depth or hidden obstacles. Perspective and furniture scale remain estimates, product images should be tightly cropped transparent PNG cutouts for the cleanest composite, and room-fit claims must be confirmed against measured dimensions before reserving.
+
+See [beta-hardening.md](docs/beta-hardening.md) for additive migrations, separate mail/AI workers, recovery tasks, aggregate AI request limits, monitoring, and rollback. Apply migrations before starting the updated application. Pause both workers and the scheduler for consistent backups.

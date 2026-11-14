@@ -7,6 +7,7 @@ use App\Http\Requests\ReservationStoreRequest;
 use App\Models\FurnitureProduct;
 use App\Models\Recommendation;
 use App\Models\Reservation;
+use App\Services\ReservationStatusNotifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -22,11 +23,12 @@ class ReservationController extends Controller
 
         abort_unless($request->user()->role === 'customer', 403);
 
-        return view('reservations.index', ['reservations' => $request->user()->reservations()->with('product')->latest()->paginate(12)]);
+        return view('reservations.index', ['reservations' => $request->user()->reservations()->with('product', 'transactions')->latest()->paginate(12)]);
     }
 
     public function store(ReservationStoreRequest $request)
     {
+        $notifier = app(ReservationStatusNotifier::class);
         $data = $request->validated();
         if ($request->boolean('customization_requested')) {
             $dimensionValues = collect([
@@ -53,18 +55,20 @@ class ReservationController extends Controller
             $recommendation = Recommendation::where('user_id', $request->user()->id)->findOrFail($data['recommendation_id']);
             abort_unless($recommendation->items()->where('furniture_product_id', $product->id)->exists(), 422, 'That item is not part of this recommendation.');
         }
-        $reservation = DB::transaction(function () use ($data, $request) {
+        $result = DB::transaction(function () use ($data, $request, $notifier) {
             // Lock an existing row even when there are no previous reservations.
             $request->user()->newQuery()->whereKey($request->user()->id)->lockForUpdate()->firstOrFail();
             $duplicate = Reservation::where('user_id', $request->user()->id)->where('furniture_product_id', $data['furniture_product_id'])->whereIn('status', ['pending', 'confirmed'])->lockForUpdate()->exists();
             if ($duplicate) return null;
             $reservation = Reservation::create(array_merge($data, ['reference' => 'FC-'.now()->format('ymd').'-'.strtoupper(Str::random(6)), 'user_id' => $request->user()->id, 'expires_at' => now()->addDays(7)]));
             $reservation->transactions()->create(['actor_id' => $request->user()->id, 'action' => 'submitted', 'notes' => 'Reservation request submitted by customer.']);
-            return $reservation;
+            return [$reservation, $notifier->record($reservation, 'pending')];
         });
-        if (! $reservation) {
+        if (! $result) {
             throw \Illuminate\Validation\ValidationException::withMessages(['furniture_product_id' => 'You already have an active request for this item.']);
         }
+        [$reservation, $log] = $result;
+        $notifier->dispatch($reservation, $log);
         if ($request->expectsJson()) {
             return response()->json(['message' => "Reservation {$reservation->reference} was submitted for review. No payment has been collected.", 'reference' => $reservation->reference], 201);
         }
@@ -75,12 +79,15 @@ class ReservationController extends Controller
     {
         abort_unless($reservation->user_id === $request->user()->id, 403);
         $data = $request->validated();
-        DB::transaction(function () use ($request, $reservation, $data) {
+        $notifier = app(ReservationStatusNotifier::class);
+        [$reservation, $log] = DB::transaction(function () use ($request, $reservation, $data, $notifier) {
             $reservation = Reservation::whereKey($reservation->id)->lockForUpdate()->firstOrFail();
             abort_unless(in_array($reservation->status, ['pending', 'confirmed']), 422, 'Only active reservations can be cancelled.');
             $reservation->update(['status' => 'cancelled', 'cancellation_reason' => $data['cancellation_reason'] ?? null]);
             $reservation->transactions()->create(['actor_id' => $request->user()->id, 'action' => 'cancelled', 'notes' => $data['cancellation_reason'] ?? 'Cancelled by customer.']);
+            return [$reservation, $notifier->record($reservation, 'cancelled')];
         });
+        $notifier->dispatch($reservation, $log);
         return back()->with('success', 'The reservation request was cancelled.');
     }
 }

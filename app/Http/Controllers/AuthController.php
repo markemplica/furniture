@@ -6,13 +6,13 @@ use App\Http\Requests\LoginRequest;
 use App\Http\Requests\RegisterRequest;
 use App\Http\Requests\ResendVerificationRequest;
 use App\Http\Requests\VerifyEmailRequest;
-use App\Models\NotificationLog;
 use App\Models\RegistrationVerificationCode;
 use App\Models\User;
-use App\Notifications\EmailVerificationCodeNotification;
+use App\Services\RegistrationVerificationService;
 use App\Support\SafeRedirectTarget;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
@@ -25,9 +25,14 @@ class AuthController extends Controller
 
     private const DUMMY_PASSWORD_HASH = '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2uheWG/igi.';
 
-    public function showLogin(Request $request)
+    public function showLogin(LoginRequest $request)
     {
-        return view('auth.login', ['redirect' => $request->query('redirect')]);
+        $email = $request->old('email');
+
+        return view('auth.login', [
+            'redirect' => $request->validated('redirect'),
+            'email' => is_string($email) && mb_strlen($email) <= 255 ? $email : '',
+        ]);
     }
 
     public function showRegister()
@@ -82,11 +87,11 @@ class AuthController extends Controller
 
         Auth::login($user, $request->boolean('remember'));
         $request->session()->regenerate();
-        $redirect = (string) $request->input('redirect');
+        $redirect = $credentials['redirect'] ?? '';
         $fallback = $request->user()->isAdmin() ? route('admin.dashboard') : route('home');
         $target = $this->safeRedirectTarget($redirect, $request, $fallback);
 
-        return redirect()->intended($target)->with('success', 'Welcome back, '.$request->user()->name.'.');
+        return redirect()->intended($target)->with('welcome', 'Welcome back, '.$request->user()->name.'.');
     }
 
     private function safeRedirectTarget(string $redirect, Request $request, string $fallback): string
@@ -115,7 +120,7 @@ class AuthController extends Controller
             'password' => Hash::make($data['password']),
             'is_active' => false,
         ]));
-        $this->issueRegistrationCode($user, $request);
+        app(RegistrationVerificationService::class)->issue($user, $request);
         $request->session()->put('registration_email', $user->email);
 
         return redirect()->route('verification.notice')->with('success', 'We sent a verification code to your email. Enter it to activate your account.');
@@ -125,23 +130,29 @@ class AuthController extends Controller
     {
         $data = $request->validated();
         $email = Str::lower(trim($data['email']));
-        $user = User::where('email', $email)->whereNull('email_verified_at')->where('is_active', false)->first();
-        $record = $user
-            ? RegistrationVerificationCode::where('user_id', $user->id)->whereNull('used_at')->where('expires_at', '>', now())->latest('id')->first()
-            : null;
-
-        if (! $record || ! Hash::check($data['code'], $record->code_hash)) {
-            if ($record) {
+        $user = DB::transaction(function () use ($email, $data) {
+            $user = User::where('email', $email)->whereNull('email_verified_at')->where('is_active', false)->lockForUpdate()->first();
+            $record = $user
+                ? RegistrationVerificationCode::where('user_id', $user->id)->latest('id')->lockForUpdate()->first()
+                : null;
+            if (! $record || $record->used_at || ! $record->expires_at->isFuture() || $record->attempts >= 6) {
+                return null;
+            }
+            if (! Hash::check($data['code'], $record->code_hash)) {
                 $attempts = $record->attempts + 1;
                 $record->update(['attempts' => $attempts, 'used_at' => $attempts >= 6 ? now() : null]);
-            }
 
+                return null;
+            }
+            $user->update(['email_verified_at' => now(), 'is_active' => true]);
+            RegistrationVerificationCode::where('user_id', $user->id)->whereNull('used_at')->update(['used_at' => now()]);
+
+            return $user;
+        }, 3);
+
+        if (! $user) {
             return back()->withErrors(['code' => 'The verification code is incorrect or has expired. Request a new code and try again.'])->withInput(['email' => $email]);
         }
-
-        $user->update(['email_verified_at' => now(), 'is_active' => true]);
-        $record->update(['used_at' => now()]);
-        RegistrationVerificationCode::where('user_id', $user->id)->whereNull('used_at')->update(['used_at' => now()]);
         Auth::login($user);
         $request->session()->regenerate();
         $request->session()->forget('registration_email');
@@ -156,41 +167,14 @@ class AuthController extends Controller
         $user = User::where('email', $email)->whereNull('email_verified_at')->where('is_active', false)->first();
 
         if ($user) {
-            $recentCode = RegistrationVerificationCode::where('user_id', $user->id)
-                ->where('created_at', '>', now()->subMinute())
-                ->exists();
-            if ($recentCode) {
+            if (! app(RegistrationVerificationService::class)->issue($user, $request, respectCooldown: true)) {
                 return back()->withErrors(['email' => 'Please wait one minute before requesting another code.'])->withInput(['email' => $email]);
             }
 
-            $this->issueRegistrationCode($user, $request);
             $request->session()->put('registration_email', $email);
         }
 
         return redirect()->route('verification.notice')->with('success', 'If the account is waiting for verification, a new code has been sent.');
-    }
-
-    private function issueRegistrationCode(User $user, Request $request): void
-    {
-        RegistrationVerificationCode::where('user_id', $user->id)->whereNull('used_at')->update(['used_at' => now()]);
-        $code = (string) random_int(100000, 999999);
-        RegistrationVerificationCode::create([
-            'user_id' => $user->id,
-            'code_hash' => Hash::make($code),
-            'expires_at' => now()->addMinutes(15),
-            'requested_ip' => $request->ip(),
-        ]);
-        $log = NotificationLog::create([
-            'user_id' => $user->id,
-            'type' => 'email_verification_code',
-            'recipient' => $user->email,
-            'subject' => 'Verify your FurniCraft account',
-            'status' => 'queued',
-        ]);
-        $user->notify(new EmailVerificationCodeNotification($code));
-        if (config('queue.default') === 'sync') {
-            $log->update(['status' => 'sent', 'sent_at' => now()]);
-        }
     }
 
     public function logout(Request $request)
@@ -199,6 +183,6 @@ class AuthController extends Controller
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect()->route('home')->with('success', 'You have been signed out.');
+        return redirect()->route('home');
     }
 }

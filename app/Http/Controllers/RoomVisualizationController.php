@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\VerifyRoomPreviewRequest;
-use App\Jobs\AnalyzeRoomImage;
 use App\Models\FurnitureProduct;
 use App\Models\Recommendation;
 use App\Models\RoomImage;
@@ -13,6 +12,7 @@ use App\Services\GeminiService;
 use App\Services\PrivacyAudit;
 use App\Services\RoomPhotoService;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class RoomVisualizationController extends Controller
 {
@@ -40,27 +40,12 @@ class RoomVisualizationController extends Controller
 
         $analysis = $roomImage->analysis ?? [];
 
-        $zonesMissing = blank($analysis['candidate_zones'] ?? null)
-            || (int) data_get($analysis, 'placement_profile_version', 0) < 2;
-        $analysisRunning = in_array($roomImage->analysis_status, ['queued', 'processing', 'retrying'], true);
-        $canAnalyzeZones = ! $roomImage->analysis_requested_at || $roomImage->analysis_requested_at->lt(now()->subMinutes(10));
-
-        if (! $request->user()->isAdmin() && $roomImage->gemini_consent_at && $selectedProduct && $zonesMissing && $gemini->isConfigured() && ! $analysisRunning && $canAnalyzeZones) {
-            $roomImage->update([
-                'analysis_status' => 'queued',
-                'analysis_error' => null,
-                'analysis_requested_at' => now(),
-            ]);
-            AnalyzeRoomImage::dispatch($roomImage->id, 'all catalog furniture');
-            $roomImage->refresh();
-        }
+        // Rendering a GET page must never queue billable analysis. Use the explicit POST action.
 
         $selectedPlacement = $selectedProduct
             ? $placementService->forProduct(
                 $roomImage->analysis ?? [],
                 $selectedProduct,
-                $roomImage->room_width_m ? (float) $roomImage->room_width_m : null,
-                $roomImage->room_depth_m ? (float) $roomImage->room_depth_m : null,
             )
             : null;
 
@@ -70,7 +55,7 @@ class RoomVisualizationController extends Controller
     public function verifyPreview(VerifyRoomPreviewRequest $request, RoomImage $roomImage, FurnitureProduct $product, GeminiService $gemini)
     {
         abort_unless($roomImage->user_id === $request->user()->id, 403);
-        abort_unless($roomImage->gemini_consent_at && $gemini->isConfigured(), 403, 'AI preview checking was not enabled for this photo.');
+        abort_unless(\App\Services\AiProvider::hasPhotoConsent($roomImage) && $gemini->isConfigured(), 403, 'AI preview checking requires consent for the current provider.');
         abort_unless($product->status === 'active', 404);
         abort_unless($product->width_cm && $product->depth_cm && $product->height_cm, 422, 'Dimensions not available for this item.');
 
@@ -80,25 +65,40 @@ class RoomVisualizationController extends Controller
         $previewBytes = base64_decode($previewBase64, true);
 
         if ($previewBytes === false) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'preview' => 'The preview image must contain valid base64 data.',
             ]);
         }
 
         if (strlen($previewBytes) > 2_000_000) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'preview' => 'The preview image must be no larger than 2 MB.',
             ]);
         }
 
         $imageInfo = @getimagesizefromstring($previewBytes);
         if ($imageInfo === false || ! in_array($imageInfo['mime'] ?? null, ['image/png', 'image/jpeg', 'image/webp'], true)) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'preview' => 'The preview must be a PNG, JPEG, or WebP image.',
             ]);
         }
 
-        $result = $gemini->verifyRoomPlacement($roomImage->image_path, $previewBase64, $data['placement']);
+        $fallback = ['verdict' => 'good', 'issues' => [], 'corrections' => ['dx' => 0, 'dy' => 0, 'scale_factor' => 1, 'flip' => null], 'realism_score' => .35, 'valid' => false];
+        $cacheKey = 'ai-fit-check:'.hash('sha256', \App\Services\AiProvider::name().'|'.\App\Services\AiProvider::model().'|'.$roomImage->user_id.'|'.$roomImage->id.'|'.$roomImage->updated_at?->toISOString().'|'.$product->id.'|'.$product->updated_at?->toISOString().'|'.hash('sha256', $previewBytes).'|'.json_encode($data['placement']));
+        try {
+            $result = \Illuminate\Support\Facades\Cache::get($cacheKey);
+            if (! $result) {
+                $lock = \Illuminate\Support\Facades\Cache::lock($cacheKey.':lock', 90);
+                if (! $lock->get()) return response()->json($fallback);
+                try {
+                    $result = \Illuminate\Support\Facades\Cache::get($cacheKey) ?? $gemini->verifyRoomPlacement($roomImage->image_path, $previewBase64, $data['placement']);
+                    \Illuminate\Support\Facades\Cache::put($cacheKey, $result, ($result['valid'] ?? false) ? 600 : 30);
+                } finally { $lock->release(); }
+            }
+        } catch (\Throwable $exception) {
+            \Illuminate\Support\Facades\Log::warning('Visual check safely fell back', ['exception' => $exception::class]);
+            $result = $fallback;
+        }
 
         $generation = RoomPreviewGeneration::firstOrNew([
             'room_image_id' => $roomImage->id,

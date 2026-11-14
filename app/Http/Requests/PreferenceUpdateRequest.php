@@ -15,7 +15,7 @@ class PreferenceUpdateRequest extends FormRequest
         }
 
         $range = $this->input('budget_range');
-        if (! is_string($range) || preg_match('/^\d+(?:\.\d{1,2})?-\d+(?:\.\d{1,2})?$/', $range) !== 1) {
+        if (! is_string($range) || strlen($range) > 64 || preg_match('/\A\d+(?:\.\d{1,2})?-\d+(?:\.\d{1,2})?\z/', $range) !== 1) {
             return;
         }
 
@@ -30,14 +30,16 @@ class PreferenceUpdateRequest extends FormRequest
 
     public function rules(): array
     {
-        $rangeRules = ['required', 'string', 'regex:/^\d+(?:\.\d{1,2})?-\d+(?:\.\d{1,2})?$/'];
+        $rangeRules = ['bail', 'required', 'string', 'max:64', 'regex:/\A\d+(?:\.\d{1,2})?-\d+(?:\.\d{1,2})?\z/'];
         $preferenceRules = [
             'furniture_type' => ['required', 'string', Rule::in(FurnitureProduct::recommendationTypes()->all())],
-            'budget_min' => ['required', 'numeric', 'min:0'],
-            'budget_max' => ['required', 'numeric', 'gt:budget_min'],
-            'style' => ['nullable', 'string', 'max:80'],
-            'wood_type' => ['nullable', Rule::in(FurnitureProduct::where('status', 'active')->distinct()->pluck('wood_type')->all())],
-            'varnish_finish' => ['nullable', Rule::in(FurnitureProduct::where('status', 'active')->distinct()->pluck('varnish_finish')->all())],
+            'budget_min' => ['bail', 'required', 'numeric', 'decimal:0,2', 'min:0', 'max:9999999999.99'],
+            'budget_max' => ['bail', 'required', 'numeric', 'decimal:0,2', 'min:0', 'max:9999999999.99', 'gt:budget_min'],
+            'style' => ['bail', 'nullable', 'string', 'max:255', Rule::in(FurnitureProduct::where('status', 'active')->distinct()->pluck('style')->all())],
+            'wood_type' => ['bail', 'nullable', 'string', 'max:255', Rule::in(FurnitureProduct::where('status', 'active')->distinct()->pluck('wood_type')->all())],
+            'varnish_finish' => ['bail', 'nullable', 'string', 'max:255', Rule::in(FurnitureProduct::where('status', 'active')->distinct()->pluck('varnish_finish')->all())],
+            'room_width_m' => ['nullable', 'numeric', 'min:1', 'max:50', 'required_with:room_depth_m'],
+            'room_depth_m' => ['nullable', 'numeric', 'min:1', 'max:50', 'required_with:room_width_m'],
             'notes' => ['nullable', 'string', 'max:1000'],
         ];
 
@@ -46,7 +48,7 @@ class PreferenceUpdateRequest extends FormRequest
         }
 
         $range = $this->input('budget_range');
-        if (! is_string($range) || preg_match('/^\d+(?:\.\d{1,2})?-\d+(?:\.\d{1,2})?$/', $range) !== 1) {
+        if (! is_string($range) || strlen($range) > 64 || preg_match('/\A\d+(?:\.\d{1,2})?-\d+(?:\.\d{1,2})?\z/', $range) !== 1) {
             return ['budget_range' => $rangeRules];
         }
 

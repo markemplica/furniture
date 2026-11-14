@@ -1,7 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+process.env.FURNICRAFT_BROWSER_DB ??= join(mkdtempSync(join(tmpdir(), 'furnicraft-browser-smoke-')), 'database.sqlite');
 
 export default defineConfig({
     testDir: './tests/Browser',
+    globalSetup: './tests/Browser/global-setup.js',
     fullyParallel: true,
     reporter: 'list',
     use: {
@@ -14,10 +20,4 @@ export default defineConfig({
         { name: 'desktop-edge', use: { ...devices['Desktop Chrome'], channel: 'msedge' } },
         { name: 'mobile-edge', use: { ...devices['Desktop Chrome'], channel: 'msedge', viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true } },
     ],
-    webServer: {
-        command: 'php artisan serve --host=127.0.0.1 --port=8001',
-        url: 'http://127.0.0.1:8001/up',
-        reuseExistingServer: !process.env.CI,
-        timeout: 30_000,
-    },
 });

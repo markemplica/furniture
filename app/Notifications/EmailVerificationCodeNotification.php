@@ -3,11 +3,12 @@
 namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class EmailVerificationCodeNotification extends Notification implements ShouldQueue
+class EmailVerificationCodeNotification extends Notification implements ShouldQueue, ShouldBeEncrypted
 {
     use Queueable;
 
@@ -19,7 +20,7 @@ class EmailVerificationCodeNotification extends Notification implements ShouldQu
         return [30, 120, 300];
     }
 
-    public function __construct(public string $code)
+    public function __construct(public string $code, public ?int $notificationLogId = null)
     {
         $this->afterCommit();
     }
@@ -28,6 +29,8 @@ class EmailVerificationCodeNotification extends Notification implements ShouldQu
     {
         return ['mail'];
     }
+
+    public function viaQueues(): array { return ['mail' => 'mail']; }
 
     public function toMail(object $notifiable): MailMessage
     {

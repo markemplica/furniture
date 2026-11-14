@@ -1,29 +1,33 @@
 @extends('layouts.app')
 @section('title', 'Manage catalog')
 @section('content')
-<header class="page-heading">
+<header class="page-heading admin-catalog-heading">
     <div>
         <p class="section-kicker">Catalog records</p>
         <h1>Furniture catalog</h1>
-        <p>Deactivate items to hide them from customers while keeping history. Deleting removes catalog activity and previews; items with reservations must be deactivated.</p>
+        <a class="btn btn-primary mt-2" href="{{ route('admin.products.create') }}">Add furniture</a>
     </div>
-    <a class="btn btn-primary" href="{{ route('admin.products.create') }}">Add furniture</a>
+<form class="admin-catalog-search" method="GET" action="{{ route('admin.products.index') }}" data-report-filters>
+    <label class="form-label" for="admin-product-search">Search furniture</label>
+    <div class="d-flex gap-2">
+    <x-search-field id="admin-product-search" :value="request('q')" placeholder="Search name or category" aria-describedby="admin-product-search-help" />
+    <button class="btn btn-dark">Search</button>
+    </div>
+    <div class="form-text" id="admin-product-search-help">Results appear as you type.</div>
+    <div class="small text-danger" data-report-search-error role="status" hidden></div>
+</form>
 </header>
 
-<form class="d-flex gap-2 mb-3" method="GET">
-    <input class="form-control" name="q" value="{{ request('q') }}" placeholder="Search name or category">
-    <button class="btn btn-dark">Search</button>
-</form>
-
+<div data-report-results aria-live="polite">
 <div class="table-responsive">
-    <table class="table align-middle">
+    <table class="table align-middle admin-catalog-table">
         <thead><tr><th>Product</th><th>Material</th><th>Price</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
         <tbody>
         @forelse($products as $product)
             <tr>
                 <td>
                     <div class="d-flex align-items-center gap-2">
-                        <img src="{{ $product->image_url }}" alt="" width="64" height="48" style="object-fit:cover">
+                        <img src="{{ $product->image_url }}" alt="" width="64" height="64">
                         <div><strong>{{ $product->name }}</strong><div class="small text-muted">{{ $product->category }}</div></div>
                     </div>
                 </td>
@@ -36,7 +40,7 @@
                         @if($product->status === 'active')
                             <form method="POST" action="{{ route('admin.products.destroy', $product) }}">
                                 @csrf @method('DELETE')
-                                <button class="btn btn-sm btn-outline-warning" onclick="return confirm('Deactivate this furniture? Customers will no longer see it, and its history will be kept.')">Deactivate</button>
+                                <button class="btn btn-sm btn-outline-warning" data-confirm="Deactivate this furniture? Customers will no longer see it, and its history will be kept.">Deactivate</button>
                             </form>
                         @else
                             <form method="POST" action="{{ route('admin.products.status', $product) }}">
@@ -50,7 +54,7 @@
                             <button class="btn btn-sm btn-outline-danger"
                                 @disabled($product->reservations_count > 0)
                                 title="{{ $product->reservations_count > 0 ? 'Reservation history exists; deactivate this item instead.' : 'Delete this item and its catalog activity.' }}"
-                                onclick="return confirm('Delete this furniture and its catalog activity, favorites, recommendation history, views, and previews? This cannot be undone.')">
+                                data-confirm="Delete this furniture and its catalog activity, favorites, recommendation history, views, and previews? This cannot be undone.">
                                 Delete
                             </button>
                         </form>
@@ -68,4 +72,5 @@
 </div>
 
 {{ $products->links() }}
+</div>
 @endsection

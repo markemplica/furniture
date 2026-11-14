@@ -1,4 +1,4 @@
-param([switch]$Lan)
+param([switch]$Lan, [switch]$WorkersOnly)
 
 $ErrorActionPreference = 'Stop'
 $appRoot = $PSScriptRoot
@@ -17,9 +17,11 @@ if (!(Test-Path $php) -or !(Test-Path $router) -or !(Test-Path (Join-Path $appRo
 New-Item -ItemType Directory -Path $logs -Force | Out-Null
 $services = @(
     @{ Name='web'; Args=@('-S',("${bindAddress}:8000"),('"'+$router+'"')); Directory=(Join-Path $appRoot 'public'); Match=[regex]::Escape($router) },
-    @{ Name='queue'; Args=@(('"'+$artisan+'"'),'queue:work','--tries=3','--timeout=540'); Directory=$appRoot; Match=([regex]::Escape($artisan)+'"?\s+queue:work') },
+    @{ Name='mail-queue'; Args=@(('"'+$artisan+'"'),'queue:work','--queue=mail','--tries=3','--timeout=60'); Directory=$appRoot; Match=([regex]::Escape($artisan)+'"?\s+queue:work\b.*--queue=mail(?:\s|$)') },
+    @{ Name='ai-queue'; Args=@(('"'+$artisan+'"'),'queue:work','--queue=ai,default','--tries=3','--timeout=540'); Directory=$appRoot; Match=([regex]::Escape($artisan)+'"?\s+queue:work\b.*--queue=ai,default(?:\s|$)') },
     @{ Name='scheduler'; Args=@(('"'+$artisan+'"'),'schedule:work'); Directory=$appRoot; Match=([regex]::Escape($artisan)+'"?\s+schedule:work') }
 )
+if ($WorkersOnly) { $services = @($services | Where-Object { $_.Name -in @('mail-queue', 'ai-queue') }) }
 foreach ($service in $services) {
     $running = @(Get-CimInstance Win32_Process -Filter "name = 'php.exe'" | Where-Object { $_.CommandLine -match $service.Match })
     if ($running.Count) {
@@ -35,6 +37,7 @@ foreach ($service in $services) {
     if ($process.HasExited) { throw "$($service.Name) failed to start. Check storage\logs\$($service.Name)-launcher-error.log." }
     Write-Host "$($service.Name): started (PID $($process.Id))"
 }
+if ($WorkersOnly) { return }
 $ready = $false
 for ($attempt = 0; $attempt -lt 10; $attempt++) {
     try {

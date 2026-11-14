@@ -21,6 +21,11 @@ class ReportDownloadTest extends TestCase
             ->assertOk()->assertSee('Download')->assertSee('PDF (.pdf)');
         $csv = $this->get(route('admin.reports.export', $filters + ['format' => 'csv']))->assertOk();
         $this->assertStringContainsString('Included Customer', $csv->streamedContent());
+        $this->assertStringNotContainsString('Shop location', $csv->streamedContent());
+        $this->get(route('admin.reports.index', ['report' => 'reservations']))
+            ->assertOk()->assertDontSee('Shop location')->assertSee('colspan="6"', false);
+        $reservationCsv = $this->get(route('admin.reports.export', ['report' => 'reservations', 'format' => 'csv']))->assertOk();
+        $this->assertStringNotContainsString('Shop location', $reservationCsv->streamedContent());
         $this->assertStringNotContainsString('Excluded Customer', $csv->streamedContent());
         $this->assertStringNotContainsString('Another Customer', $csv->streamedContent());
         $this->get(route('admin.reports.index', $filters))->assertSee('Included Customer')->assertDontSee('Another Customer');

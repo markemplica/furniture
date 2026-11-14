@@ -6,22 +6,34 @@ use App\Http\Controllers\Controller;
 use App\Models\NotificationLog;
 use App\Models\Reservation;
 use App\Http\Requests\Admin\ReservationUpdateRequest;
-use App\Notifications\ReservationConfirmedNotification;
+use App\Services\ReservationStatusNotifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class ReservationController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, \App\Services\ReservationPreview $previews, \App\Services\RoomPhotoService $photos)
     {
-        $reservations = Reservation::with('user', 'product')->when($request->filled('status'), fn ($q) => $q->where('status', $request->status))->latest()->paginate(15)->withQueryString();
-        return view('admin.reservations.index', compact('reservations'));
+        $reservations = Reservation::with('user', 'product', 'recommendation.roomImage')->when($request->filled('status'), fn ($q) => $q->where('status', $request->status))->latest()->paginate(15)->withQueryString();
+        $references = $reservations->getCollection()->pluck('reference')->all();
+        foreach ($reservations as $reservation) {
+            $reservation->setAttribute('preview_available', $previews->available($reservation, $photos));
+        }
+        $notificationLogs = $references === [] ? collect() : NotificationLog::query()
+            ->where('type', 'reservation_confirmed')
+            ->whereIn('payload->reservation', $references)
+            ->orderByDesc('id')->get()
+            ->unique(fn (NotificationLog $log) => data_get($log->payload, 'reservation'))
+            ->keyBy(fn (NotificationLog $log) => data_get($log->payload, 'reservation'));
+
+        return view('admin.reservations.index', compact('reservations', 'notificationLogs'));
     }
 
     public function update(ReservationUpdateRequest $request, Reservation $reservation)
     {
         $data = $request->validated();
-        [$reservation, $log] = DB::transaction(function () use ($request, $reservation, $data) {
+        $notifier = app(ReservationStatusNotifier::class);
+        [$reservation, $log] = DB::transaction(function () use ($request, $reservation, $data, $notifier) {
             $log = null;
             $reservation = Reservation::whereKey($reservation->id)->lockForUpdate()->firstOrFail();
             abort_unless(in_array($reservation->status, ['pending', 'confirmed', 'declined'], true), 422, 'This reservation is already closed.');
@@ -33,7 +45,7 @@ class ReservationController extends Controller
                 abort_unless($reservation->status === 'confirmed' && $data['status'] === 'confirmed', 422, 'Shop readiness can only be recorded for a confirmed reservation.');
             }
             $previousStatus = $reservation->status;
-            $wasConfirmed = $previousStatus === 'confirmed';
+            $wasReady = $reservation->item_ready_confirmed_at !== null;
             $isReapproved = $data['status'] === 'confirmed' && $previousStatus !== 'confirmed';
             $updates = [
                 'status' => $data['status'],
@@ -42,23 +54,26 @@ class ReservationController extends Controller
                 'decline_reason' => $data['status'] === 'declined' ? ($data['decline_reason'] ?? $reservation->decline_reason) : null,
             ];
             if ($data['status'] !== 'confirmed') $updates['item_ready_confirmed_at'] = null;
-            if ($request->boolean('item_ready')) $updates['item_ready_confirmed_at'] = now();
+            if ($request->boolean('item_ready')) $updates['item_ready_confirmed_at'] = $reservation->item_ready_confirmed_at ?? now();
             if (($data['outcome'] ?? null) === 'completed') $updates['completed_at'] = now();
             if (($data['outcome'] ?? null) === 'no_show') $updates['no_show_at'] = now();
             $reservation->update($updates);
             $action = $data['outcome'] ?? ($request->boolean('item_ready') ? 'item_ready_confirmed' : $data['status']);
             $reservation->transactions()->create(['actor_id' => $request->user()->id, 'action' => $action, 'notes' => $data['notes'] ?? $data['decline_reason'] ?? null, 'metadata' => ['previous_status' => $previousStatus]]);
-            if ($data['status'] === 'confirmed' && ! $wasConfirmed) {
-                $reservation->load('user', 'product');
-                $log = NotificationLog::create(['user_id' => $reservation->user_id, 'type' => 'reservation_confirmed', 'recipient' => $reservation->user->email, 'subject' => ReservationConfirmedNotification::SUBJECT, 'status' => 'queued', 'payload' => ['reservation' => $reservation->reference, 'product' => $reservation->product->name, 'branch' => $reservation->branch, 'confirmed_at' => $reservation->confirmed_at?->toIso8601String(), 'next_step' => 'contact_branch_to_confirm_item_readiness']]);
+            if ($previousStatus !== $reservation->status) {
+                $log = $notifier->record($reservation, $reservation->status);
+            } elseif ($request->boolean('item_ready') && ! $wasReady) {
+                $log = $notifier->record($reservation, 'ready');
             }
             return [$reservation, $log];
         });
-        if ($log) {
-            $reservation->user->notify((new ReservationConfirmedNotification($reservation))->afterCommit());
-            if (config('queue.default') === 'sync') {
-                DB::afterCommit(fn () => $log->update(['status' => 'sent', 'sent_at' => now()]));
-            }
+        $notifier->dispatch($reservation, $log);
+        if ($request->expectsJson() && $request->boolean('item_ready')) {
+            return response()->json([
+                'status' => $reservation->status,
+                'item_ready_confirmed_at' => $reservation->item_ready_confirmed_at?->toIso8601String(),
+                'label' => 'Shop marked ready · '.$reservation->item_ready_confirmed_at?->format('M j'),
+            ]);
         }
         $statusMessage = match ($reservation->status) {
             'confirmed' => 'request approved',

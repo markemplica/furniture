@@ -29,7 +29,7 @@ class GeminiService
     public function roomFallback(?float $width, ?float $depth, ?string $furnitureType = null): array { return $this->roomVision->roomFallback($width, $depth, $furnitureType); }
     public function analyzeRoom(string $storagePath, ?float $width, ?float $depth, ?string $furnitureType = null, bool $throwOnFailure = false): array { return $this->roomVision->analyzeRoom($storagePath, $width, $depth, $furnitureType, $throwOnFailure); }
     public function verifyRoomPlacement(string $roomStoragePath, string $previewBase64, array $placement): array { return $this->roomVision->verifyRoomPlacement($roomStoragePath, $previewBase64, $placement); }
-    public function furnishRoom(string $roomStoragePath, FurnitureProduct $product, bool $throwOnFailure = false, int $modelLimit = 2, int $retryAttempts = 1): array { return $this->roomVision->furnishRoom($roomStoragePath, $product, $throwOnFailure, $modelLimit, $retryAttempts); }
+    public function furnishRoom(string $roomStoragePath, FurnitureProduct $product, bool $throwOnFailure = false, int $modelLimit = 2, int $retryAttempts = 1, array $placement = []): array { return $this->roomVision->furnishRoom($roomStoragePath, $product, $throwOnFailure, $modelLimit, $retryAttempts, $placement); }
     public function verifyGeneratedRoom(string $roomStoragePath, string $previewBytes, FurnitureProduct $product, int $modelLimit = 2): array { return $this->roomVision->verifyGeneratedRoom($roomStoragePath, $previewBytes, $product, $modelLimit); }
 
     private function request(array $parts, bool $json = false, ?array $schema = null, string $operation = 'text_generation', int $timeout = 30, int $retryAttempts = 2, int $modelLimit = 2, ?string $systemInstruction = null): string

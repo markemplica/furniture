@@ -67,8 +67,8 @@ class PreviewVerificationStatusTest extends TestCase
         if ($failure) $raster->shouldNotReceive('pixelGuard');
         else $raster->shouldReceive('pixelGuard')->once()->andReturn(['supported' => true, 'passed' => $guardPasses]);
         $raster->shouldReceive('available')->andReturn(true);
-        if ($guardPasses) $raster->shouldNotReceive('composite');
-        else $raster->shouldReceive('composite')->once()->andReturn(['bytes' => 'local-bytes', 'mime' => 'image/png']);
+        // The deterministic 2D composite is prepared first for fallback and placement bounds.
+        $raster->shouldReceive('composite')->once()->andReturn(['bytes' => 'local-bytes', 'mime' => 'image/png']);
         app(RoomPreviewV2Service::class)->process($generation->id);
         $generation->refresh();
         $this->assertSame($failure === 'quota' ? 'ai_request_limit_reached' : ($failure ? 'ai_generation_unavailable' : null), $generation->failure_code);

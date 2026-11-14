@@ -1,5 +1,7 @@
 # FurniCraft production deployment
 
+Use [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) to verify mail, queue processing, scheduling, backup and restore, and rollback on the real host.
+
 ## Server requirements
 
 - Supported PHP 8.2+ with `pdo_mysql`, `mbstring`, `openssl`, `fileinfo`, `curl`, `xml`, `ctype`, `tokenizer`, and `json` extensions.
@@ -10,15 +12,15 @@
 ## Environment setup
 
 1. Deploy the repository to a private application directory and point the web server document root to `public/`.
-2. Install production dependencies and create the deployment environment from the production-oriented, credential-free template. Keep secrets in the host's secret manager; never commit `.env`.
+2. Install production dependencies and create the deployment environment from the credential-free [production template](.env.production.example). Keep secrets in the host's secret manager; never commit `.env`.
 
    ```sh
    composer install --no-dev --optimize-autoloader
-   cp .env.example .env
+   cp .env.production.example .env
    ```
 
 3. Set `APP_ENV=production`, `APP_DEBUG=false`, the real HTTPS `APP_URL`, a generated stable `APP_KEY`, database credentials, mail-provider credentials, `ADMIN_FEEDBACK_EMAIL`, and `QUEUE_CONNECTION=database`. If TLS terminates at a reverse proxy, set `TRUSTED_PROXIES` to its exact IP/CIDR values. Keep `SESSION_ENCRYPT=true`, `SESSION_SECURE_COOKIE=true`, `SESSION_HTTP_ONLY=true`, and `SESSION_SAME_SITE=lax`.
-4. Leave `FILESYSTEM_DISK=local` for private room images unless S3 is configured. `AWS_BUCKET`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` are required only when S3 or SQS is selected. `GEMINI_API_KEY` is optional; missing keys and provider failures use local fallbacks.
+4. Leave `FILESYSTEM_DISK=local` for private room images unless S3 is configured. Set `PRIVATE_STORAGE_ROOT` to the absolute path of a persistent, private, writable volume outside `public/`. Create that directory on the host, give the web and queue processes access, and verify at least 5 GB of free space there with `df -h` (provision more for expected photo growth and monitor free space). The readiness threshold is fixed at 5 GB; changing an environment value cannot create disk capacity. `AWS_BUCKET`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` are required only when S3 or SQS is selected. `GEMINI_API_KEY` is optional; missing keys and provider failures use local fallbacks.
 5. Create a least-privilege database, then run:
 
    ```sh
@@ -38,11 +40,14 @@
 Run the worker under Supervisor, systemd, or the host's process manager. Restart it on deploy:
 
 ```sh
-php artisan queue:work --tries=3 --timeout=540
+php artisan queue:work --queue=mail --tries=3 --timeout=60
+php artisan queue:work --queue=ai,default --tries=3 --timeout=540
 php artisan queue:restart
 ```
 
 Schedule `php artisan schedule:run` every minute using the host scheduler. Keep the worker timeout shorter than the queue connection's `retry_after` value. Review failed jobs with `php artisan queue:failed` and retry only after checking the cause.
+
+Registration verification metadata is pruned hourly after a code has been used or expired for `REGISTRATION_VERIFICATION_RETENTION_HOURS` (default 24, minimum 1). Preview the eligible count with `php artisan registration-codes:prune --dry-run`. The cleanup removes only eligible verification records, not accounts or still-usable codes. Keep the scheduler running and monitor its success; adding a schedule does not install the host scheduler. Before a manual production cleanup, follow the backup/restore procedure below. Restore the affected verification table from a protected backup if data recovery is necessary; increasing the retention setting cannot recover deleted rows.
 
 ## Backups and recovery
 
@@ -58,3 +63,5 @@ Laravel writes daily rotating logs by default (`LOG_CHANNEL=daily`, 14 days). Re
 ## Rollback
 
 Keep the previous release available and roll application code back through the deployment process. Before any down migration or destructive data operation, take a verified backup and review the migration's impact. Do not run `migrate:fresh` or rewrite repository history on a production database.
+
+See [beta-hardening.md](docs/beta-hardening.md) for additive migrations, separate workers, recovery tasks, aggregate AI limits, and rollback. Pause both workers and the scheduler for consistent backups.

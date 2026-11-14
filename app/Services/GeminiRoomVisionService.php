@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Storage;
 
 class GeminiRoomVisionService
 {
+    private const ANALYSIS_IMAGE_MAX_SIDE = 1280;
+
     public function __construct(
         private GeminiClient $provider,
         private RoomPhotoService $roomPhotos,
@@ -46,6 +48,11 @@ class GeminiRoomVisionService
 
     public function analyzeRoom(string $storagePath, ?float $width, ?float $depth, ?string $furnitureType = null, bool $throwOnFailure = false): array
     {
+        return $this->provider->withRequestLimit(min((int) config('services.gemini.max_calls_per_operation', 3), (int) config('roompreview.max_provider_calls', 8)), fn () => $this->performRoomAnalysis($storagePath, $width, $depth, $furnitureType, $throwOnFailure));
+    }
+
+    private function performRoomAnalysis(string $storagePath, ?float $width, ?float $depth, ?string $furnitureType, bool $throwOnFailure): array
+    {
         $fallback = $this->roomFallback($width, $depth, $furnitureType);
 
         if (! $this->provider->isConfigured()) {
@@ -60,6 +67,7 @@ class GeminiRoomVisionService
         try {
             $bytes = $this->roomPhotos->get($storagePath);
             $mime = $this->roomPhotos->mimeType($storagePath);
+            [$analysisBytes, $analysisMime] = $this->prepareAnalysisImage($bytes, $mime);
             $text = 'Analyze this uploaded room photo for realistic 2D furniture placement. The customer wants this furniture type: '.($furnitureType ?: 'unspecified furniture').'. Identify the visible floor polygon, usable wall regions, door/window openings, existing furniture or obstacles, horizon, vanishing point, and up to 6 valid placement zones. All polygon points and coordinates must use percentages from 0 to 100 in the original image coordinate system. Each candidate zone needs a surface (floor, wall-floor, or opening), floor-contact anchor_x_percent and anchor_y_percent, max_width_percent, rotation_deg, perspective_deg, flip, suitable_types, clearance_score, occlusion_score, confidence, and a concise reason. For every door/opening candidate, quad_percent is required and must contain exactly four image-coordinate points ordered top-left, top-right, bottom-right, bottom-left, following the visible frame perspective even when it is tilted or trapezoidal. Never place furniture across a doorway, window, obstacle, or primary walkway. Door products require a true doorway opening. Cabinets, wardrobes, and beds prefer wall-floor zones. Living-room furniture includes sala sets, sofas, couches, and sectionals; place these in the main living area on a clear floor or wall-floor zone near the usable wall or focal point, orient seating toward the room center or focal point, and preserve walkways. Dining sets belong in a clear dining floor zone with chair clearance. Tables and desks need usable floor space; chairs and benches should go beside their matching table or seating zone when visible, otherwise in clear floor space. Return suitable_types using broad family names as well as catalog names so matching products can share a valid zone. Also return the single best legacy placement_x_percent, placement_y_percent, and placement_width_percent. Width and depth must be 1 to 50 meters or null. Coordinates: x 5-95, y 30-96, displayed width 1-90, rotation -18 to 18, perspective -24 to 24, and scores 0-100. Use supplied room measurements when present; otherwise make conservative visual estimates. State that results are planning estimates, not construction measurements. Known room width: '.($width ?: 'unknown').' m; depth: '.($depth ?: 'unknown').' m.';
             $text .= ' Return vision_geometry with normalized 0-1 coordinates for image_quality, floor_polygon, walls, openings, horizon_y, blocked_zones, existing_furniture, scale_clues, structured lighting, and confidence. For scale clues use typical reference sizes: door 210 cm tall (80-90 cm wide), ceiling 250 cm, outlet about 30 cm above floor, floor tile 30-60 cm, chair seat about 45 cm high. Give each clue a realistic reliability score and base_y at its floor contact. Describe visible facts only; never invent a door, window, or floor; use null and low confidence when unsure.';
             $text .= ' Door placement safety: Never classify a window, skylight, transom, or glass panel as a doorway. A real door opening must be a full-height passage reaching the finished floor. For each true doorway, return two separate quadrilaterals: quad_percent traces the visible opening, and door_fit_quad_percent is the exact destination for the door overlay. Put door_fit_quad_percent on the room-facing installation plane at the actual entrance; trace both near jambs from the header to the floor threshold and span the full usable width. For a recessed closet, use the entrance jambs and trim closest to the camera, not the smaller opening or shelves on the back wall. Never reuse coordinates from a window. Only mark a zone suitable for a door when the full room-facing frame is visible and door_fit_quad_percent has four corners. Otherwise omit the fit quadrilateral and mark that zone unsuitable. Check that the overlay reaches from the doorway header almost to the floor and fills the entry width. Keep windows labeled as windows.';
@@ -105,7 +113,7 @@ class GeminiRoomVisionService
             ];
             $parts = [
                 ['text' => $text],
-                ['inline_data' => ['mime_type' => $mime, 'data' => base64_encode($bytes)]],
+                ['inline_data' => ['mime_type' => $analysisMime, 'data' => base64_encode($analysisBytes)]],
             ];
             $decoded = null;
             for ($attempt = 0; $attempt < 2; $attempt++) {
@@ -122,6 +130,12 @@ class GeminiRoomVisionService
                 $this->telemetry->record('room', 'room_analysis', 'fallback', fallbackUsed: true, failureCode: 'invalid_geometry');
                 return $fallback;
             }
+            if (data_get($decoded, 'vision_geometry.image_quality.usable') === false) {
+                $fallback['vision_geometry'] = $decoded['vision_geometry'];
+                $fallback['summary'] = 'This photo is not clear enough for AI placement. Upload a clearer room photo; local guidance remains available.';
+                $this->telemetry->record('room', 'room_analysis', 'fallback', fallbackUsed: true, failureCode: 'photo_quality_low');
+                return $fallback;
+            }
             if (is_array($decoded)) {
                 foreach (['estimated_width_m', 'estimated_depth_m'] as $key) {
                     $value = isset($decoded[$key]) && is_numeric($decoded[$key]) ? (float) $decoded[$key] : null;
@@ -129,9 +143,12 @@ class GeminiRoomVisionService
                 }
                 $decoded['estimated_width_m'] = $width ?: $decoded['estimated_width_m'];
                 $decoded['estimated_depth_m'] = $depth ?: $decoded['estimated_depth_m'];
+                $reportedConfidence = strtolower(trim((string) ($decoded['dimension_confidence'] ?? 'low')));
                 $decoded['dimension_confidence'] = ($width && $depth)
                     ? 'customer-provided'
-                    : ($decoded['dimension_confidence'] ?? 'low');
+                    : ((! $decoded['estimated_width_m'] || ! $decoded['estimated_depth_m'])
+                        ? 'unavailable'
+                        : (in_array($reportedConfidence, ['high', 'medium', 'low'], true) ? $reportedConfidence : 'low'));
                 foreach ([
                     'placement_x_percent' => [5, 95],
                     'placement_y_percent' => [30, 96],
@@ -163,7 +180,7 @@ class GeminiRoomVisionService
                 $decoded['analyzed_furniture_type'] = $furnitureType;
                 $decoded['placement_profile_version'] = 2;
 
-                return array_merge($fallback, array_intersect_key($decoded, $fallback), ['gemini_used' => true]);
+                return array_merge($fallback, array_intersect_key($decoded, $fallback), ['gemini_used' => true, 'ai_provider' => AiProvider::name()]);
             }
             $this->telemetry->record('room', 'room_analysis', 'fallback', fallbackUsed: true, failureCode: 'invalid_response');
         } catch (\Throwable $e) {
@@ -174,6 +191,54 @@ class GeminiRoomVisionService
         }
 
         return $fallback;
+    }
+
+    /** Reduce provider-bound image pixels while preserving the original private upload. */
+    private function prepareAnalysisImage(string $bytes, string $mime): array
+    {
+        $dimensions = @getimagesizefromstring($bytes);
+        if (! is_array($dimensions)
+            || max((int) $dimensions[0], (int) $dimensions[1]) <= self::ANALYSIS_IMAGE_MAX_SIDE
+            || ! function_exists('imagecreatefromstring')) {
+            return [$bytes, $mime];
+        }
+
+        $mime = strtolower($mime);
+        if (! in_array($mime, ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'], true)
+            || ($mime === 'image/webp' && ! function_exists('imagewebp'))) {
+            return [$bytes, $mime];
+        }
+
+        $source = @imagecreatefromstring($bytes);
+        if (! $source) return [$bytes, $mime];
+
+        $scale = self::ANALYSIS_IMAGE_MAX_SIDE / max((int) $dimensions[0], (int) $dimensions[1]);
+        $width = max(1, (int) round((int) $dimensions[0] * $scale));
+        $height = max(1, (int) round((int) $dimensions[1] * $scale));
+        $resized = imagecreatetruecolor($width, $height);
+
+        if (in_array($mime, ['image/png', 'image/webp'], true)) {
+            imagealphablending($resized, false);
+            imagesavealpha($resized, true);
+            $transparent = imagecolorallocatealpha($resized, 0, 0, 0, 127);
+            imagefill($resized, 0, 0, $transparent);
+        }
+
+        imagecopyresampled($resized, $source, 0, 0, 0, 0, $width, $height, (int) $dimensions[0], (int) $dimensions[1]);
+        ob_start();
+        $written = match ($mime) {
+            'image/jpeg', 'image/jpg' => imagejpeg($resized, null, 84),
+            'image/png' => imagepng($resized, null, 6),
+            'image/webp' => imagewebp($resized, null, 82),
+            default => false,
+        };
+        $prepared = (string) ob_get_clean();
+        imagedestroy($source);
+        imagedestroy($resized);
+
+        return $written && $prepared !== ''
+            ? [$prepared, $mime === 'image/jpg' ? 'image/jpeg' : $mime]
+            : [$bytes, $mime];
     }
 
     public function verifyRoomPlacement(string $roomStoragePath, string $previewBase64, array $placement): array
@@ -206,10 +271,12 @@ class GeminiRoomVisionService
         ];
         $prompt = 'Compare image 1 (original customer room) with image 2 (FurniCraft composite). Review only whether the selected furniture fits the visible scene. Do not infer hidden geometry or claim exact measurements. Placement metadata: '.json_encode($placement).'. Return JSON only. If uncertain, verdict needs_adjustment and lower realism_score. Corrections must be small, normalized image offsets and a scale multiplier; never recommend a correction that moves furniture through a door, wall, or outside the floor.';
         try {
+            [$providerRoom, $providerRoomMime] = $this->prepareAnalysisImage($this->roomPhotos->get($roomStoragePath), $this->roomPhotos->mimeType($roomStoragePath));
+            [$providerPreview, $providerPreviewMime] = $this->prepareAnalysisImage($previewBytes, $previewMime);
             $response = $this->provider->generateText([
                 ['text' => $prompt],
-                ['inline_data' => ['mime_type' => $this->roomPhotos->mimeType($roomStoragePath), 'data' => base64_encode($this->roomPhotos->get($roomStoragePath))]],
-                ['inline_data' => ['mime_type' => $previewMime, 'data' => base64_encode($previewBytes)]],
+                ['inline_data' => ['mime_type' => $providerRoomMime, 'data' => base64_encode($providerRoom)]],
+                ['inline_data' => ['mime_type' => $providerPreviewMime, 'data' => base64_encode($providerPreview)]],
             ], true, $schema, 'room_preview_verification', 25, 1);
             $decoded = json_decode($response, true);
             if (! is_array($decoded)) return $fallback;
@@ -240,9 +307,11 @@ class GeminiRoomVisionService
         }
     }
 
-    public function furnishRoom(string $roomStoragePath, FurnitureProduct $product, bool $throwOnFailure = false, int $modelLimit = 2, int $retryAttempts = 1): array
+    public function furnishRoom(string $roomStoragePath, FurnitureProduct $product, bool $throwOnFailure = false, int $modelLimit = 2, int $retryAttempts = 1, array $placement = []): array
     {
         $fallback = ['bytes' => null, 'mime_type' => null, 'used' => false];
+
+        if (($placement['renderable'] ?? true) === false) return $fallback;
 
         if (! $this->provider->isConfigured()) {
             $this->telemetry->record('image', 'furnished_preview', 'fallback', fallbackUsed: true, failureCode: 'not_configured');
@@ -262,7 +331,25 @@ class GeminiRoomVisionService
         try {
             $roomBytes = $this->roomPhotos->get($roomStoragePath);
             $roomMime = $this->roomPhotos->mimeType($roomStoragePath);
+            [$roomBytes, $roomMime] = $this->prepareAnalysisImage($roomBytes, $roomMime);
             $prompt = 'Create one photorealistic furnished-room preview from the two supplied images. The first image is the customer room and must remain the same camera angle, crop, architecture, walls, windows, doors, floor, ceiling, lighting, and existing permanent fixtures. The second image is the exact selected Lance Furniture Shop product: '.$product->name.' ('.$product->category.'). Treat the room image as the only scale reference. Infer the furniture apparent size and perspective visually from the room; do not rely on numeric measurements. Place only that exact furniture item in a visually plausible, clear area of the room, add natural contact shadows and matching light, and preserve the room photo. The selected catalog image is the source of truth for product identity and design. Preserve its wood color, finish, structure, cushions, and number of pieces. Do not substitute another design. Do not add rugs, plants, paintings, lamps, decorations, other furniture, people, text, logos, borders, or labels. Return only the completed room image.';
+
+            if ($placement !== []) {
+                // Only server-calculated numeric geometry belongs in the image instructions.
+                $geometry = [];
+                foreach (['x_percent', 'y_percent', 'max_width_percent', 'rotation_deg', 'perspective_deg', 'flip'] as $key) {
+                    if (is_numeric($placement[$key] ?? null)) $geometry[$key] = (float) $placement[$key];
+                }
+                $quad = $placement['quad_percent'] ?? null;
+                if (is_array($quad) && count($quad) === 4 && collect($quad)->every(fn ($point) => is_array($point) && count($point) === 2 && is_numeric($point[0]) && is_numeric($point[1]))) {
+                    $geometry['quad_percent'] = array_map(fn ($point) => array_map(fn ($value) => max(0, min(100, (float) $value)), $point), $quad);
+                }
+                $bounds = $placement['bounds_percent'] ?? null;
+                if (is_array($bounds) && count($bounds) === 4 && collect($bounds)->every(fn ($value) => is_numeric($value))) {
+                    $geometry['bounds_percent'] = array_map(fn ($value) => max(0, min(100, (float) $value)), $bounds);
+                }
+                $prompt .= ' Follow this server-selected 2D placement: '.json_encode($geometry).'. Image coordinates are percentages, with (0,0) at the top left. x_percent is the horizontal center, y_percent is the bottom contact point, and max_width_percent is the maximum visible product width. bounds_percent is the permitted left, top, right, bottom rectangle. Keep the whole catalog product or set within that area; do not choose a different location. If quad_percent is provided, fit the product to those four corners in top-left, top-right, bottom-right, bottom-left order. Preserve the photographed product proportions and its number of pieces. These are image coordinates, not customer-provided room measurements.';
+            }
 
             return $this->provider->generateImage([
                 ['text' => $prompt],
@@ -301,13 +388,15 @@ class GeminiRoomVisionService
             ], 'required' => ['scale', 'placement', 'catalog_fidelity', 'room_preservation', 'lighting']],
             'single_item_only' => ['type' => 'boolean'], 'catalog_item_only' => ['type' => 'boolean'],
         ], 'required' => ['scores', 'single_item_only', 'catalog_item_only']];
-        $prompt = 'Images: original room, exact catalog product, generated result. Score 0..1 for realistic scale, placement fit, identity match to catalog product, preservation of the original room and camera, and lighting/shadow match. Confirm exactly one furniture item was added and it matches the catalog product. Return JSON only.';
+        $prompt = 'Images: original room, exact catalog product, generated result. Score 0..1 for realistic scale, placement fit, identity match to catalog product, preservation of the original room and camera, and lighting/shadow match. Confirm exactly one catalog product was added and it matches the catalog reference. A furniture set is one catalog product: preserve every chair, sofa, table, cushion, and other piece shown in that set. single_item_only means no additional products outside the selected item or set. Return JSON only.';
         try {
+            [$providerRoom, $providerRoomMime] = $this->prepareAnalysisImage($this->roomPhotos->get($roomStoragePath), $this->roomPhotos->mimeType($roomStoragePath));
+            [$providerPreview, $providerPreviewMime] = $this->prepareAnalysisImage($previewBytes, $mime);
             $response = $this->provider->generateText([
                 ['text' => $prompt],
-                ['inline_data' => ['mime_type' => $this->roomPhotos->mimeType($roomStoragePath), 'data' => base64_encode($this->roomPhotos->get($roomStoragePath))]],
+                ['inline_data' => ['mime_type' => $providerRoomMime, 'data' => base64_encode($providerRoom)]],
                 ['inline_data' => ['mime_type' => $productImage['mime_type'], 'data' => base64_encode($productImage['bytes'])]],
-                ['inline_data' => ['mime_type' => $mime, 'data' => base64_encode($previewBytes)]],
+                ['inline_data' => ['mime_type' => $providerPreviewMime, 'data' => base64_encode($providerPreview)]],
             ], true, $schema, 'room_preview_verification', 25, 0, max(1, min(2, $modelLimit)));
             $decoded = json_decode($response, true);
             if (! is_array($decoded) || ! is_array($decoded['scores'] ?? null)) return $fallback;
@@ -340,9 +429,10 @@ class GeminiRoomVisionService
         } elseif (str_starts_with($product->image_path, 'catalog:')) {
             $path = public_path('images/catalog/'.substr($product->image_path, 8));
         } elseif (Storage::disk('public')->exists($product->image_path)) {
+            [$bytes, $mime] = $this->prepareAnalysisImage(Storage::disk('public')->get($product->image_path), Storage::disk('public')->mimeType($product->image_path) ?: 'image/png');
             return [
-                'bytes' => Storage::disk('public')->get($product->image_path),
-                'mime_type' => Storage::disk('public')->mimeType($product->image_path) ?: 'image/png',
+                'bytes' => $bytes,
+                'mime_type' => $mime,
             ];
         } else {
             return null;
@@ -352,7 +442,8 @@ class GeminiRoomVisionService
             return null;
         }
 
-        return ['bytes' => file_get_contents($path), 'mime_type' => mime_content_type($path) ?: 'image/png'];
+        [$bytes, $mime] = $this->prepareAnalysisImage(file_get_contents($path), mime_content_type($path) ?: 'image/png');
+        return ['bytes' => $bytes, 'mime_type' => $mime];
     }
 
     private function sanitizeVisionGeometry(mixed $geometry): ?array

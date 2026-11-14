@@ -24,4 +24,40 @@ class PublicCatalogTest extends TestCase
         $this->assertDatabaseCount('favorites', 0);
         $this->assertDatabaseCount('reservations', 0);
     }
+
+    public function test_typeahead_ranks_a_strong_match_after_the_first_thirty_candidates(): void
+    {
+        for ($index = 1; $index <= 30; $index++) {
+            FurnitureProduct::create([
+                'name' => "Formal Dining Table Option {$index}",
+                'slug' => "formal-dining-table-option-{$index}",
+                'description' => 'Dining table option.',
+                'category' => 'Dining Table',
+                'wood_type' => 'Gmelina',
+                'varnish_finish' => 'Natural',
+                'style' => 'Modern',
+                'price' => 1000,
+                'status' => 'active',
+            ]);
+        }
+
+        $bestMatch = FurnitureProduct::create([
+            'name' => 'Dining Table Signature',
+            'slug' => 'dining-table-signature',
+            'description' => 'Dining table signature option.',
+            'category' => 'Dining Table',
+            'wood_type' => 'Gmelina',
+            'varnish_finish' => 'Natural',
+            'style' => 'Modern',
+            'price' => 1000,
+            'status' => 'active',
+        ]);
+
+        $response = $this->getJson(route('catalog.search', ['q' => 'dining']))
+            ->assertOk()
+            ->assertJsonCount(8);
+
+        $this->assertSame($bestMatch->name, $response->json('0.name'));
+        $this->assertContains($bestMatch->name, collect($response->json())->pluck('name')->all());
+    }
 }

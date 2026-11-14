@@ -17,4 +17,17 @@ class RoomImage extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public static function recoverStalledForUser(int $userId): void
+    {
+        static::where('user_id', $userId)->where('analysis_status', 'completed')
+            ->where('analysis->vision_geometry->image_quality->usable', false)
+            ->update(['analysis_status' => 'fallback', 'analysis->gemini_used' => false,
+                'analysis_error' => 'This photo is not clear enough for AI placement. Upload a clearer photo; local guidance remains available.']);
+        static::where('user_id', $userId)->whereIn('analysis_status', ['queued', 'processing', 'retrying'])
+            ->where(function ($query) {
+                $query->where('analysis_requested_at', '<', now()->subMinutes(15))
+                    ->orWhere(fn ($q) => $q->whereNull('analysis_requested_at')->where('updated_at', '<', now()->subMinutes(15)));
+            })->update(['analysis_status' => 'failed', 'analysis_error' => 'Room analysis timed out. Local guidance remains available. You can choose Re-analyze room to try again.']);
+    }
 }

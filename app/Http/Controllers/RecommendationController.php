@@ -31,10 +31,6 @@ class RecommendationController extends Controller
             return redirect()->to(route('preferences.edit', ['room' => $room->id]).'#room-preview')
                 ->withErrors(['room_image_id' => 'Room analysis is still running. Recommendations will be available as soon as it finishes.']);
         }
-        $preference->update([
-            'room_width_m' => $room?->room_width_m,
-            'room_depth_m' => $room?->room_depth_m,
-        ]);
         $recommendation = $service->generate($request->user(), $preference, $room, $preference->furniture_type);
 
         return redirect()->route('recommendations.show', $recommendation)->with('success', $room ? 'Your recommendations and room preview are ready.' : 'Your recommendations are ready.');
@@ -43,9 +39,17 @@ class RecommendationController extends Controller
     public function show(Request $request, Recommendation $recommendation, FurniturePlacementService $placementService, RecommendationService $ranking)
     {
         abort_unless($recommendation->user_id === $request->user()->id, 403);
+        $recommendation->load('preference');
+        if ($recommendation->preference === null) {
+            return redirect()->route('preferences.edit')->withErrors([
+                'workflow' => 'Save your furniture preferences before viewing recommendations.',
+            ]);
+        }
+
         $recommendation->load('items.product', 'messages', 'preference', 'roomImage');
-        if ($recommendation->algorithm_version !== 'hybrid-v3-strict-preferences') {
+        if ($recommendation->algorithm_version !== RecommendationService::ALGORITHM_VERSION) {
             $ranking->generate($request->user(), $recommendation->preference, $recommendation->roomImage, $recommendation->furniture_type, $recommendation);
+            $recommendation->refresh()->load('items.product', 'messages', 'preference', 'roomImage');
         }
         $recommendation->setRelation('items', $recommendation->items()
             ->whereHas('product', fn ($products) => $products->active()->matchingPreference($recommendation->preference))
@@ -57,8 +61,6 @@ class RecommendationController extends Controller
                 $item->product->id => $placementService->forProduct(
                     $room->analysis ?? [],
                     $item->product,
-                    $room->room_width_m ? (float) $room->room_width_m : null,
-                    $room->room_depth_m ? (float) $room->room_depth_m : null,
                 ),
             ])
             : collect();

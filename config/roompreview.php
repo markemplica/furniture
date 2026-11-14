@@ -14,11 +14,11 @@ return [
     'brightness_max' => 0.96,
     'pixel_difference_max' => 0.05,
     'verification_min_score' => 0.75,
-    'max_generation_attempts' => 3,
+    'max_generation_attempts' => 1,
     'max_provider_calls' => 8,
     'job_timeout_seconds' => 540,
     'unique_for_seconds' => 600,
-    'retention_days' => max(1, (int) env('ROOM_IMAGE_RETENTION_DAYS', 30)),
+    'retention_days' => max(1, (int) env('ROOM_IMAGE_RETENTION_DAYS', 90)),
     'signed_url_minutes' => 5,
     'benchmark_fixture_glob' => env('ROOM_PREVIEW_BENCHMARK_GLOB', 'tests/Fixtures/room-*.png'),
 ];

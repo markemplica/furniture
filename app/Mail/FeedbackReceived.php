@@ -18,7 +18,7 @@ class FeedbackReceived extends Mailable implements ShouldQueue
 
     public int $timeout = 60;
 
-    public function __construct(public FeedbackReport $report) {}
+    public function __construct(public FeedbackReport $report) { $this->onQueue('mail'); }
 
     public function backoff(): array
     {
@@ -35,8 +35,14 @@ class FeedbackReceived extends Mailable implements ShouldQueue
 
     public function build(): self
     {
-        return $this->subject('[FurniCraft] '.$this->report->subject)
-            ->replyTo($this->report->email)
-            ->view('emails.feedback-received');
+        $this->subject('[FurniCraft] '.$this->report->subject)
+            ->view('emails.feedback-received')
+            ->text('emails.feedback-received-text');
+
+        if ($this->report->email !== null) {
+            $this->replyTo($this->report->email);
+        }
+
+        return $this;
     }
 }

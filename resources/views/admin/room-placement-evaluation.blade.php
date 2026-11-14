@@ -1,7 +1,7 @@
 @extends('layouts.app')
 @section('title', 'Room placement accuracy review')
 @section('content')
-<header class="page-heading"><div><p class="section-kicker">Room-image evaluation · Reviewer rubric</p><h1>Assess room analysis and placement separately from usability.</h1><p>Review each analyzed room image and the available AI analysis/placement preview. Record whether floor detection, placement-zone choice, clearance, and displayed scale look correct. These are reviewer judgments, not survey SUS scores.</p></div></header>
+<header class="page-heading"><div><p class="section-kicker">Room-image evaluation · Reviewer rubric</p><h1>Assess room analysis and furniture placement.</h1><p>Review each analyzed room image and the available AI analysis/placement preview. Record whether floor detection, placement-zone choice, clearance, and displayed scale look correct.</p></div></header>
 
 <section class="metric-grid mb-4" aria-label="Room placement assessment results">
     @foreach(['floor_detection_correct' => 'Floor detection', 'zone_appropriate' => 'Placement zone', 'clearance_respected' => 'Clearance', 'scale_plausible' => 'Scale plausibility'] as $key => $label)

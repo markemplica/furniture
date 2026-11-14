@@ -1,9 +1,9 @@
             <aside class="ai-matches-chat">
         <div class="chat-panel">
-            <div class="chat-head"><h2 class="h4 mb-1">Ask about these matches</h2><p class="small mb-0">Answers stay within this recommendation and Lance catalog data.</p></div>
+            <div class="chat-head"><h2 class="h4 mb-1">Ask about these matches</h2><p class="small mb-0">Some answers are handled locally. Questions needing an AI response may be sent with recommendation and catalog details to {{ \App\Services\AiProvider::label() }}, separately from room-photo consent. Avoid sharing sensitive personal information. <a href="{{ route('privacy-policy') }}">Privacy information</a>.</p></div>
             <div class="chat-log">
                 @forelse($recommendation->messages as $message)
-                    <div class="chat-message {{ $message->role }}"><strong>{{ $message->role === 'user' ? 'You' : 'FurniCraft' }}</strong>@if($message->role === 'assistant')<small class="d-block text-muted">{{ match($message->ai_source) { 'gemini' => 'Gemini response', 'catalog-rule' => 'Current catalog answer', 'local-fallback' => 'Local catalog fallback', default => $message->gemini_used ? 'AI-assisted response' : 'Local response' } }}</small>@endif<div>{{ $message->message }}</div></div>
+                    <div class="chat-message {{ $message->role }}"><strong>{{ $message->role === 'user' ? 'You' : 'FurniCraft' }}</strong>@if($message->role === 'assistant')<small class="d-block text-muted">{{ match($message->ai_source) { 'groq' => 'Groq response', 'gemini' => 'Gemini response', 'catalog-rule' => 'Current catalog answer', 'local-fallback' => 'Local catalog fallback', default => $message->gemini_used ? 'AI-assisted response' : 'Local response' } }}</small>@endif<div>{{ $message->message }}</div></div>
                 @empty
                     <p class="text-light-emphasis">Ask about material, finish, dimensions, price, or room suitability.</p>
                 @endforelse

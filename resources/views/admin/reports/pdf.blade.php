@@ -13,7 +13,7 @@ td, th { padding: 7px 5px; border: 1px solid #d9c9be; overflow-wrap: break-word;
 tr:nth-child(even) td { background: #f6f0eb; }
 </style></head><body>
 <h1>FurniCraft</h1><h2>{{ ucfirst($report) }} report</h2>
-<p class="meta">Generated: {{ now()->format('M j, Y g:i A') }} | {{ $rows->count() }} records<br>
+<p class="meta">Generated: {{ now()->format('M j, Y g:i A') }} | {{ $recordCount }} records<br>
 Date range: {{ $filters['date_from'] ?? 'All dates' }} through {{ $filters['date_to'] ?? 'Present' }}
 @if(!empty($filters['q'])) | Search: {{ $filters['q'] }} @endif
 @if(!empty($filters['branch'])) | Shop: {{ $filters['branch'] }} @endif</p>

@@ -9,7 +9,7 @@ use App\Models\Reservation;
 use App\Models\User;
 use App\Http\Requests\Admin\ReportFiltersRequest;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Http\Request;
+use Illuminate\Support\LazyCollection;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
@@ -22,8 +22,8 @@ class ReportsController extends Controller
         $filters = $request->validated();
         $report = $filters['report'] ?? 'reservations';
         $query = $this->reportQuery($report, $filters);
-        $recordCount = (clone $query)->count();
         $rows = $query->paginate(30)->withQueryString();
+        $recordCount = $rows->total();
         $branchStats = $report === 'reservations' ? $this->reservationBranchStats($filters) : collect();
 
         return view('admin.reports.index', compact('report', 'filters', 'rows', 'recordCount', 'branchStats'));
@@ -38,12 +38,14 @@ class ReportsController extends Controller
         $query = $this->reportQuery($report, $filters);
 
         if (($filters['format'] ?? 'csv') === 'pdf') {
+            $recordCount = (clone $query)->count();
             $options = new Options();
             $options->set('isRemoteEnabled', false);
             $pdf = new Dompdf($options);
             $pdf->loadHtml(view('admin.reports.pdf', [
                 'report' => $report, 'filters' => $filters, 'headers' => $headers,
-                'rows' => $query->get()->map(fn ($record) => $this->rowValues($record, $fields)),
+                'recordCount' => $recordCount,
+                'rows' => $this->pdfRows($query, $fields),
             ])->render());
             $pdf->setPaper('a3', 'landscape');
             $pdf->render();
@@ -117,27 +119,31 @@ class ReportsController extends Controller
             $query->where('branch', $filters['branch']);
         }
 
-        return $query->latest($dateColumn);
+        return $query->latest($dateColumn)->orderByDesc($query->getModel()->qualifyColumn('id'));
     }
 
     private function reservationBranchStats(array $filters)
     {
         return $this->reportQuery('reservations', $filters)->reorder()
+            ->setEagerLoads([])
             ->select('branch')
             ->selectRaw('COUNT(*) as reservation_count')
             ->selectRaw("SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed_count")
-            ->when(! empty($filters['date_from']), fn ($query) => $query->whereDate('created_at', '>=', $filters['date_from']))
-            ->when(! empty($filters['date_to']), fn ($query) => $query->whereDate('created_at', '<=', $filters['date_to']))
             ->groupBy('branch')->orderBy('branch')->get();
+    }
+
+    private function pdfRows(Builder $query, array $fields): LazyCollection
+    {
+        return $query->lazy(200)->map(fn ($record) => $this->rowValues($record, $fields));
     }
 
     private function columns(string $report): array
     {
         return match ($report) {
             'recommendations' => [['Recommendation ID', 'Created At', 'Customer', 'Email', 'Furniture Type', 'Algorithm', 'Content Weight', 'Collaborative Weight', 'Items', 'Linked Reservations'], ['id', 'created_at', 'user_name', 'user_email', 'furniture_type', 'algorithm_version', 'content_weight', 'collaborative_weight', 'items_count', 'reservation_count']],
-            'customers' => [['Customer ID', 'Name', 'Email', 'Phone', 'Shop location', 'Active', 'Joined At', 'Recommendations', 'Reservations'], ['id', 'name', 'email', 'phone', 'branch', 'is_active', 'created_at', 'recommendations_count', 'reservations_count']],
+            'customers' => [['Customer ID', 'Name', 'Email', 'Phone', 'Active', 'Joined At', 'Recommendations', 'Reservations'], ['id', 'name', 'email', 'phone', 'is_active', 'created_at', 'recommendations_count', 'reservations_count']],
             'furniture' => [['Product ID', 'Name', 'Category', 'Style', 'Wood', 'Finish', 'Price PHP', 'Width cm', 'Depth cm', 'Height cm', 'Status', 'Views', 'Favorites', 'Reservations'], ['id', 'name', 'category', 'style', 'wood_type', 'varnish_finish', 'price', 'width_cm', 'depth_cm', 'height_cm', 'status', 'views_count', 'favorites_count', 'reservations_count']],
-            default => [['Reference', 'Created At', 'Customer', 'Email', 'Furniture', 'Category', 'Shop location', 'Status', 'Recommendation ID', 'Notes'], ['reference', 'created_at', 'user_name', 'user_email', 'product_name', 'product_category', 'branch', 'status', 'recommendation_id', 'notes']],
+            default => [['Reference', 'Created At', 'Customer', 'Email', 'Furniture', 'Category', 'Status', 'Recommendation ID', 'Notes'], ['reference', 'created_at', 'user_name', 'user_email', 'product_name', 'product_category', 'status', 'recommendation_id', 'notes']],
         };
     }
 

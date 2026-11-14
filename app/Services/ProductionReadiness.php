@@ -3,9 +3,9 @@
 namespace App\Services;
 
 use App\Models\FurnitureProduct;
+use Illuminate\Encryption\Encrypter;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Encryption\Encrypter;
 
 class ProductionReadiness
 {
@@ -66,8 +66,19 @@ class ProductionReadiness
         $feedbackReady = filter_var($feedbackRecipient, FILTER_VALIDATE_EMAIL) !== false && ! $this->isPlaceholder($feedbackRecipient);
         $this->add($checks, 'Feedback admin recipient', $feedbackReady, $feedbackReady ? 'A delivery address is configured.' : 'ADMIN_FEEDBACK_EMAIL must contain a real admin mailbox.');
 
-        $geminiConfigured = filled(config('services.gemini.key'));
-        $this->add($checks, 'Gemini fallback behavior', true, $geminiConfigured ? 'Gemini is configured; failed requests use local guidance.' : 'GEMINI_API_KEY is empty; local room estimates and chat guidance remain available.');
+        $geminiConfigured = app(GeminiClient::class)->isConfigured();
+        $this->add($checks, 'Gemini fallback behavior', true, $geminiConfigured ? 'The selected AI provider is enabled with usage limits; failed requests use local guidance.' : 'The selected AI provider is disabled or unconfigured; local room estimates and chat guidance remain available.');
+        $models = array_filter([AiProvider::model(), AiProvider::model(true), AiProvider::name() === 'gemini' ? config('services.gemini.fallback_model') : null]);
+        $policyReady = ! config('services.gemini.enabled') || (
+            (int) config('services.gemini.daily_request_limit') > 0 && (int) config('services.gemini.monthly_request_limit') > 0
+            && (int) config('services.gemini.daily_budget_micro_usd') > 0 && (int) config('services.gemini.monthly_budget_micro_usd') > 0
+            && in_array(AiProvider::name(), ['gemini', 'groq'], true)
+            && array_diff($models, config('services.'.AiProvider::name().'.allowed_text_models', [])) === []
+            && (! config('services.gemini.image_enabled') || in_array(config('services.gemini.image_model'), config('services.gemini.allowed_image_models', []), true))
+        );
+        $this->add($checks, 'AI spending policy', $policyReady, $policyReady
+            ? 'Paid AI is disabled, or explicit request limits, reserved USD allowances and approved models are configured. App allowances are not a provider invoice guarantee.'
+            : 'Before enabling paid AI, configure positive daily/monthly request and USD allowance limits and approved model IDs.');
 
         $filesystemDisk = (string) config('filesystems.default');
         $awsReady = $filesystemDisk !== 's3'
@@ -92,12 +103,12 @@ class ProductionReadiness
         $privateStorage = $storageWritable && ! str_starts_with(strtolower($root), strtolower($publicRoot));
         $this->add($checks, 'Private room-photo storage', $privateStorage, $privateStorage ? 'The local private disk is writable and outside the public web root.' : 'The local private disk must be persistent, writable, and outside the public web root.');
 
-        $minimumFreeBytes = 1024 * 1024 * 1024;
+        $minimumFreeBytes = 5 * 1024 * 1024 * 1024;
         $freeBytes = @disk_free_space($root);
         $enoughSpace = $freeBytes !== false && $freeBytes >= $minimumFreeBytes;
         $spaceDetail = $freeBytes === false
             ? 'Free space could not be measured for the private storage volume.'
-            : number_format($freeBytes / (1024 ** 3), 2).' GB is free; at least 1.00 GB is required.';
+            : number_format($freeBytes / (1024 ** 3), 2).' GB is free; at least 5.00 GB is required.';
         $this->add($checks, 'Private storage capacity', $enoughSpace, $spaceDetail);
 
         $v2Enabled = (bool) config('roompreview.use_v2_pipeline');

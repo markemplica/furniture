@@ -11,8 +11,6 @@ class FurniturePlacementService
         $type = strtolower($product->recommendationType());
         $preferredSurface = $this->preferredSurface($type);
         $measurement = $this->measurementAssessment($product, $roomWidth, $roomDepth, $type);
-
-
         $zones = collect($analysis['candidate_zones'] ?? [])->filter(fn ($zone) => is_array($zone));
 
         if (str_contains($type, 'door')) {
@@ -29,14 +27,17 @@ class FurniturePlacementService
             $surfaceScore = $surface === $preferredSurface ? 35 : ($preferredSurface === 'floor' && $surface === 'wall-floor' ? 30 : 0);
             $typeScore = $this->zoneSupportsType($suitableTypes->all(), $type) ? 25 : 0;
             $dimensionScore = $this->dimensionScore($product, $roomWidth, $roomDepth, $zone);
-            $validFloorAnchor = $this->validFloorAnchor($analysis, $zone, $surface);
-            $collision = $this->collidesWithExcludedRegion($analysis, $zone, $product, $roomWidth, $roomDepth, $type);
+            $placementWidth = $this->visualWidthForZone($analysis, $zone, $surface, $type, $product, $roomWidth, $roomDepth);
+            $placementDepth = $this->renderDepth($product, $roomDepth, $placementWidth);
+            $validFloorFootprint = $this->validFloorFootprint($analysis, $zone, $surface, $placementWidth, $placementDepth);
+            $collision = $this->collidesWithExcludedRegion($analysis, $zone, $type, $placementWidth, $placementDepth);
             $score = ($confidence * 20) + $surfaceScore + $typeScore + ($clearance * .12) + ((100 - $occlusion) * .05) + $dimensionScore;
 
             return [
                 'zone' => $zone,
+                'placement_width' => $placementWidth,
                 'score' => round(min(100, $score), 1),
-                'valid' => $validFloorAnchor && ! $collision && $clearance >= 35 && $occlusion <= 65,
+                'valid' => $validFloorFootprint && ! $collision && $clearance >= 35 && $occlusion <= 65,
             ];
         })->filter(fn (array $candidate) => $candidate['valid'])->sortByDesc('score')->values();
 
@@ -45,10 +46,14 @@ class FurniturePlacementService
             $zone = $best['zone'];
             $score = (float) $best['score'];
             $quad = str_contains($type, 'door')
-                ? $this->quad($zone['door_fit_quad_percent'] ?? $zone['quad_percent'] ?? $zone['_quad_percent'] ?? null)
+                ? $this->quad($zone['door_fit_quad_percent'] ?? null)
                 : null;
-            $renderWidth = $this->renderWidth($product, $roomWidth, $zone);
+            $renderWidth = $best['placement_width'];
             $needsConfirmation = false;
+            $fitConfidenceScore = $score;
+            if (! str_contains($type, 'door') && $measurement['status'] === 'measurements-missing') {
+                $fitConfidenceScore = min($fitConfidenceScore, count($this->floorPolygon($analysis)) >= 3 ? 72.0 : 42.0);
+            }
 
             return [
                 'x_percent' => $this->clamp($zone['anchor_x_percent'] ?? 50, 5, 95),
@@ -59,7 +64,8 @@ class FurniturePlacementService
                 'flip' => filter_var($zone['flip'] ?? false, FILTER_VALIDATE_BOOLEAN) ? -1 : 1,
                 'quad_percent' => $quad,
                 'surface' => $zone['surface'] ?? $preferredSurface,
-                'confidence' => $score >= 78 ? 'high' : ($score >= 58 ? 'medium' : 'low'),
+                'confidence' => $fitConfidenceScore >= 78 ? 'high' : ($fitConfidenceScore >= 58 ? 'medium' : 'low'),
+                'confidence_score' => round($fitConfidenceScore, 1),
                 'score' => $score,
                 'reason' => trim((string) ($zone['reason'] ?? 'Best clear zone for the selected furniture type.')),
                 'needs_confirmation' => $needsConfirmation,
@@ -81,7 +87,7 @@ class FurniturePlacementService
             );
         }
 
-        return $this->fallbackPlacement($analysis, $type, $preferredSurface, $measurement);
+        return $this->fallbackPlacement($analysis, $product, $type, $preferredSurface, $measurement);
     }
 
     private function preferredSurface(string $type): string
@@ -179,7 +185,7 @@ class FurniturePlacementService
         if (str_contains($type, 'door')) {
             return ! $this->isWindowZone($zone)
                 && $surface === 'opening'
-                && $this->quad($zone['door_fit_quad_percent'] ?? $zone['quad_percent'] ?? $zone['_quad_percent'] ?? null) !== null;
+                && $this->quad($zone['door_fit_quad_percent'] ?? null) !== null;
         }
 
         if ($surface === 'opening') {
@@ -204,45 +210,60 @@ class FurniturePlacementService
 
         return (bool) preg_match('/window|skylight|clerestory|transom|fenestration/', $description);
     }
-    private function validFloorAnchor(array $analysis, array $zone, string $surface): bool
+    private function renderDepth(FurnitureProduct $product, ?float $roomDepth, float $width): float
     {
-        if (! in_array($surface, ['floor', 'wall-floor'], true) || count($analysis['floor_polygon'] ?? []) < 3) {
+        return ($roomDepth && $product->depth_cm)
+            ? $this->clamp(((float) $product->depth_cm / ($roomDepth * 100)) * 100, 6, 35)
+            : max(8, $width * .3);
+    }
+
+    private function validFloorFootprint(array $analysis, array $zone, string $surface, float $width, float $depth): bool
+    {
+        if (! in_array($surface, ['floor', 'wall-floor'], true)) {
             return true;
         }
 
-        return $this->pointInPolygon(
-            (float) ($zone['anchor_x_percent'] ?? 50),
-            (float) ($zone['anchor_y_percent'] ?? 86),
-            $analysis['floor_polygon'],
-        );
-    }
+        $floor = $this->floorPolygon($analysis);
+        if (count($floor) < 3) {
+            return true;
+        }
 
-    private function collidesWithExcludedRegion(array $analysis, array $zone, FurnitureProduct $product, ?float $roomWidth, ?float $roomDepth, string $type): bool
-    {
-        $width = $this->renderWidth($product, $roomWidth, $zone);
-        $depth = ($roomDepth && $product->depth_cm)
-            ? $this->clamp(((float) $product->depth_cm / ($roomDepth * 100)) * 100, 6, 35)
-            : max(8, $width * .3);
         $x = (float) ($zone['anchor_x_percent'] ?? 50);
         $y = (float) ($zone['anchor_y_percent'] ?? 86);
-        $footprint = [$x - ($width / 2), $y - $depth, $x + ($width / 2), $y];
-        $regions = collect($analysis['obstacles'] ?? []);
+        $rect = [$x - ($width / 2), $y - $depth, $x + ($width / 2), $y];
+
+        return $this->rectangleInsidePolygon($rect, $floor);
+    }
+
+    private function collidesWithExcludedRegion(array $analysis, array $zone, string $type, float $width, float $depth): bool
+    {
+        $x = (float) ($zone['anchor_x_percent'] ?? 50);
+        $y = (float) ($zone['anchor_y_percent'] ?? 86);
+        $rect = [$x - ($width / 2), $y - $depth, $x + ($width / 2), $y];
+        $geometry = is_array($analysis['vision_geometry'] ?? null) ? $analysis['vision_geometry'] : [];
+        $regions = collect($analysis['obstacles'] ?? [])
+            ->concat($analysis['blocked_zones'] ?? [])
+            ->concat($geometry['blocked_zones'] ?? []);
 
         if (str_contains($type, 'door')) {
-            // A door leaf detected inside the doorway is the existing door being
-            // replaced, not a separate obstacle that should force the preview
-            // onto a window or block the doorway entirely.
+            // The detected door leaf is the item being replaced, not a blocker.
             $regions = $regions->reject(fn ($region) => is_array($region)
                 && preg_match('/door[_\s-]*leaf/i', (string) ($region['label'] ?? '')));
         } else {
-            $regions = $regions->concat($analysis['openings'] ?? []);
+            $regions = $regions->concat($analysis['openings'] ?? [])->concat($geometry['openings'] ?? []);
         }
 
-        return $regions->contains(function ($region) use ($footprint) {
-            $bounds = $this->polygonBounds(is_array($region) ? ($region['polygon'] ?? []) : []);
+        if ($regions->contains(fn ($region) => is_array($region)
+            && $this->polygonIntersectsRectangle($this->regionPolygon($region), $rect))) {
+            return true;
+        }
 
-            return $bounds && $this->boxesOverlap($footprint, $bounds);
-        });
+        $existingFurniture = collect($analysis['existing_furniture'] ?? [])
+            ->concat($geometry['existing_furniture'] ?? []);
+
+        return $existingFurniture->contains(fn ($item) => is_array($item)
+            && ! (str_contains($type, 'door') && preg_match('/door[_\s-]*leaf/i', (string) ($item['label'] ?? '')))
+            && $this->polygonIntersectsRectangle($this->regionPolygon($item), $rect));
     }
 
     private function renderWidth(FurnitureProduct $product, ?float $roomWidth, array $zone): float
@@ -255,13 +276,31 @@ class FurniturePlacementService
         $catalogWidth = is_numeric($product->width_cm) ? (float) $product->width_cm : null;
         $roomRelativeWidth = $catalogWidth && $roomWidth
             ? $catalogWidth / $roomWidth
-            : ($catalogWidth ? $catalogWidth / 3.5 : null);
+            : null;
 
         if ($roomRelativeWidth !== null) {
             return $this->clamp(min($capacity * .96, $roomRelativeWidth), 1, 90);
         }
 
-        return $this->clamp($capacity * .72, 1, 90);
+        return $this->clamp($capacity * .90, 1, 90);
+    }
+
+    private function visualWidthForZone(array $analysis, array $zone, string $surface, string $type, FurnitureProduct $product, ?float $roomWidth, ?float $roomDepth): float
+    {
+        $baseline = $this->renderWidth($product, $roomWidth, $zone);
+        if ($roomWidth !== null || $surface === 'opening') return $baseline;
+
+        $capacity = $this->clamp($zone['max_width_percent'] ?? 65, 1, 90);
+        foreach ([$capacity, $capacity * .95] as $width) {
+            if ($width <= $baseline) continue;
+            $depth = $this->renderDepth($product, $roomDepth, $width);
+            if ($this->validFloorFootprint($analysis, $zone, $surface, $width, $depth)
+                && ! $this->collidesWithExcludedRegion($analysis, $zone, $type, $width, $depth)) {
+                return $width;
+            }
+        }
+
+        return $baseline;
     }
 
     private function openingZones(array $analysis): array
@@ -272,10 +311,10 @@ class FurniturePlacementService
                 return null;
             }
 
-            $points = collect(is_array($opening) ? ($opening['door_fit_quad_percent'] ?? $opening['polygon'] ?? []) : [])
+            $points = collect(is_array($opening) ? ($opening['door_fit_quad_percent'] ?? []) : [])
                 ->filter(fn ($point) => is_array($point) && isset($point[0], $point[1]) && is_numeric($point[0]) && is_numeric($point[1]));
 
-            if ($points->count() < 3) {
+            if ($points->count() !== 4) {
                 return null;
             }
 
@@ -297,12 +336,12 @@ class FurniturePlacementService
                 'confidence' => $analysis['scene_confidence'] ?? 'medium',
                 'reason' => 'Aligned to the detected ' . $label . ' frame.',
                 '_source' => 'scene-opening',
-                '_quad_percent' => $this->orderedQuad($points->values()->all()),
+                'door_fit_quad_percent' => $this->orderedQuad($points->values()->all()),
             ];
         })->filter()->values()->all();
     }
 
-    private function fallbackPlacement(array $analysis, string $type, string $surface, array $measurement): array
+    private function fallbackPlacement(array $analysis, FurnitureProduct $product, string $type, string $surface, array $measurement): array
     {
         $defaults = match ($this->furnitureFamily($type)) {
             'door' => [88, 76, 24],
@@ -315,14 +354,22 @@ class FurniturePlacementService
             default => [56, 86, 48],
         };
 
-        $floorFit = $this->fallbackFloorFit($analysis['floor_polygon'] ?? []);
+        $floor = $this->floorPolygon($analysis);
+        $floorFit = $this->fallbackFloorFit($analysis, $product, $type, $surface, (float) $defaults[2]);
+        if (count($floor) >= 3 && $floorFit === null) {
+            return $this->blockedPlacement(
+                $surface,
+                'no-clear-space',
+                'No clear area can hold this furniture preview without crossing a detected floor boundary or obstacle. Try a clearer photo showing more of the room.',
+                $measurement,
+            );
+        }
 
         return [
             'x_percent' => $floorFit['x'] ?? $defaults[0],
             'y_percent' => $floorFit['y'] ?? $defaults[1],
-            'max_width_percent' => $floorFit
-                ? $this->clamp(min($defaults[2], $floorFit['width'] * 0.78), 15, 90)
-                : $this->clamp($defaults[2], 15, 90),            'rotation_deg' => 0,
+            'max_width_percent' => $floorFit['width'] ?? $this->clamp($defaults[2], 15, 90),
+            'rotation_deg' => 0,
             'perspective_deg' => 0,
             'flip' => 1,
             'quad_percent' => null,
@@ -342,8 +389,9 @@ class FurniturePlacementService
         ];
     }
 
-    private function fallbackFloorFit(array $polygon): ?array
+    private function fallbackFloorFit(array $analysis, FurnitureProduct $product, string $type, string $surface, float $preferredWidth): ?array
     {
+        $polygon = $this->floorPolygon($analysis);
         $points = collect($polygon)->filter(fn ($point) => is_array($point)
             && isset($point[0], $point[1])
             && is_numeric($point[0])
@@ -359,16 +407,25 @@ class FurniturePlacementService
         $maximumY = min(100, max(array_column($points, 1)));
         $centerX = ($minimumX + $maximumX) / 2;
         $targetY = $minimumY + (($maximumY - $minimumY) * 0.78);
+        $maximumWidth = min(90, $preferredWidth, ($maximumX - $minimumX) * .78);
+        if ($maximumWidth < 15) return null;
 
-        foreach ([0, -0.08, 0.08, -0.16, 0.16, -0.24, 0.24] as $yOffset) {
-            $y = $targetY + (($maximumY - $minimumY) * $yOffset);
-            foreach ([0, -0.1, 0.1, -0.2, 0.2, -0.3, 0.3] as $xOffset) {
-                $x = $centerX + (($maximumX - $minimumX) * $xOffset);
-                if ($this->pointInPolygon($x, $y, $points)) {
+        // Check the same geometry and collision rules as AI zones, not only the anchor point.
+        // A bounded search can reduce a visual estimate without inventing a tiny guaranteed fit.
+        $widths = array_unique(array_map(fn ($factor) => $this->clamp(max(15, $maximumWidth * $factor), 15, 90), [1, .85, .7, .55]));
+        foreach ($widths as $width) {
+            $depth = $this->renderDepth($product, null, $width);
+            foreach ([0, -.1, .1, -.2, .2, -.3, .3, -.4, -.5, -.6] as $yOffset) {
+                $y = $this->clamp($targetY + (($maximumY - $minimumY) * $yOffset), 30, 96);
+                foreach ([0, -.1, .1, -.2, .2, -.3, .3, -.4, .4] as $xOffset) {
+                    $x = $this->clamp($centerX + (($maximumX - $minimumX) * $xOffset), 5, 95);
+                    $zone = ['anchor_x_percent' => $x, 'anchor_y_percent' => $y];
+                    if (! $this->validFloorFootprint($analysis, $zone, $surface, $width, $depth)
+                        || $this->collidesWithExcludedRegion($analysis, $zone, $type, $width, $depth)) continue;
                     return [
-                        'x' => $this->clamp($x, 5, 95),
-                        'y' => $this->clamp($y, 30, 96),
-                        'width' => max(15, $maximumX - $minimumX),
+                        'x' => $x,
+                        'y' => $y,
+                        'width' => $width,
                     ];
                 }
             }
@@ -376,6 +433,17 @@ class FurniturePlacementService
 
         return null;
     }
+
+    private function floorPolygon(array $analysis): array
+    {
+        $visionFloor = $this->geometryPolygon(data_get($analysis, 'vision_geometry.floor_polygon', []));
+        if (count($visionFloor) >= 3) {
+            return $visionFloor;
+        }
+
+        return $this->geometryPolygon($analysis['floor_polygon'] ?? []);
+    }
+
     private function blockedPlacement(string $surface, string $status, string $reason, array $measurement): array
     {
         return [
@@ -389,19 +457,149 @@ class FurniturePlacementService
         ];
     }
 
-    private function polygonBounds(array $polygon): ?array
+    private function geometryPolygon(mixed $polygon): array
     {
-        $points = collect($polygon)->filter(fn ($point) => is_array($point) && isset($point[0], $point[1]) && is_numeric($point[0]) && is_numeric($point[1]));
-        if ($points->count() < 3) {
-            return null;
+        if (! is_array($polygon)) {
+            return [];
         }
 
-        return [(float) $points->min(fn ($point) => $point[0]), (float) $points->min(fn ($point) => $point[1]), (float) $points->max(fn ($point) => $point[0]), (float) $points->max(fn ($point) => $point[1])];
+        $points = collect($polygon)->filter(fn ($point) => is_array($point)
+            && isset($point[0], $point[1])
+            && is_numeric($point[0])
+            && is_numeric($point[1]))->values();
+        if ($points->count() < 3) {
+            return [];
+        }
+
+        $scale = $points->flatten()->map(fn ($value) => abs((float) $value))->max() <= 1.001 ? 100 : 1;
+
+        return $points->map(fn ($point) => [(float) $point[0] * $scale, (float) $point[1] * $scale])->all();
     }
 
-    private function boxesOverlap(array $a, array $b): bool
+    private function regionPolygon(array $region): array
     {
-        return $a[0] < $b[2] && $a[2] > $b[0] && $a[1] < $b[3] && $a[3] > $b[1];
+        $polygon = $this->geometryPolygon($region['polygon'] ?? []);
+        if (count($polygon) >= 3) {
+            return $polygon;
+        }
+
+        $bbox = $region['bbox'] ?? null;
+        if (! is_array($bbox) || count($bbox) !== 4 || ! collect($bbox)->every(fn ($value) => is_numeric($value))) {
+            return [];
+        }
+
+        [$x1, $y1, $x2, $y2] = array_map('floatval', array_values($bbox));
+        if (max(abs($x1), abs($y1), abs($x2), abs($y2)) <= 1.001) {
+            [$x1, $y1, $x2, $y2] = [$x1 * 100, $y1 * 100, $x2 * 100, $y2 * 100];
+        }
+
+        $left = min($x1, $x2);
+        $right = max($x1, $x2);
+        $top = min($y1, $y2);
+        $bottom = max($y1, $y2);
+
+        return $right > $left && $bottom > $top
+            ? [[$left, $top], [$right, $top], [$right, $bottom], [$left, $bottom]]
+            : [];
+    }
+
+    private function rectangleInsidePolygon(array $rect, array $polygon): bool
+    {
+        [$left, $top, $right, $bottom] = $rect;
+        if ($left < 0 || $top < 0 || $right > 100 || $bottom > 100 || $right <= $left || $bottom <= $top) {
+            return false;
+        }
+
+        $corners = [[$left, $top], [$right, $top], [$right, $bottom], [$left, $bottom]];
+        foreach ($corners as $index => $start) {
+            $end = $corners[($index + 1) % count($corners)];
+            for ($step = 0; $step <= 8; $step++) {
+                $ratio = $step / 8;
+                $point = [$start[0] + ($end[0] - $start[0]) * $ratio, $start[1] + ($end[1] - $start[1]) * $ratio];
+                if (! $this->pointInOrOnPolygon($point[0], $point[1], $polygon)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private function polygonIntersectsRectangle(array $polygon, array $rect): bool
+    {
+        if (count($polygon) < 3) {
+            return false;
+        }
+
+        [$left, $top, $right, $bottom] = $rect;
+        $inRect = fn (array $point) => $point[0] >= $left && $point[0] <= $right && $point[1] >= $top && $point[1] <= $bottom;
+        if (collect($polygon)->contains($inRect)) {
+            return true;
+        }
+
+        $corners = [[$left, $top], [$right, $top], [$right, $bottom], [$left, $bottom]];
+        if (collect($corners)->contains(fn ($point) => $this->pointInOrOnPolygon($point[0], $point[1], $polygon))) {
+            return true;
+        }
+
+        foreach ($polygon as $index => $start) {
+            $end = $polygon[($index + 1) % count($polygon)];
+            for ($edge = 0; $edge < count($corners); $edge++) {
+                if ($this->segmentsIntersect($start, $end, $corners[$edge], $corners[($edge + 1) % count($corners)])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function pointInOrOnPolygon(float $x, float $y, array $polygon): bool
+    {
+        if ($this->pointInPolygon($x, $y, $polygon)) {
+            return true;
+        }
+
+        foreach ($polygon as $index => $start) {
+            $end = $polygon[($index + 1) % count($polygon)];
+            if (abs($this->orientation($start, $end, [$x, $y])) < 1e-7
+                && $x >= min($start[0], $end[0]) - 1e-7 && $x <= max($start[0], $end[0]) + 1e-7
+                && $y >= min($start[1], $end[1]) - 1e-7 && $y <= max($start[1], $end[1]) + 1e-7) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function segmentsIntersect(array $a, array $b, array $c, array $d): bool
+    {
+        $o1 = $this->orientation($a, $b, $c);
+        $o2 = $this->orientation($a, $b, $d);
+        $o3 = $this->orientation($c, $d, $a);
+        $o4 = $this->orientation($c, $d, $b);
+
+        if ((($o1 > 0 && $o2 < 0) || ($o1 < 0 && $o2 > 0))
+            && (($o3 > 0 && $o4 < 0) || ($o3 < 0 && $o4 > 0))) {
+            return true;
+        }
+
+        return (abs($o1) < 1e-7 && $this->pointOnSegment($c, $a, $b))
+            || (abs($o2) < 1e-7 && $this->pointOnSegment($d, $a, $b))
+            || (abs($o3) < 1e-7 && $this->pointOnSegment($a, $c, $d))
+            || (abs($o4) < 1e-7 && $this->pointOnSegment($b, $c, $d));
+    }
+
+    private function pointOnSegment(array $point, array $start, array $end): bool
+    {
+        return abs($this->orientation($start, $end, $point)) < 1e-7
+            && $point[0] >= min($start[0], $end[0]) - 1e-7 && $point[0] <= max($start[0], $end[0]) + 1e-7
+            && $point[1] >= min($start[1], $end[1]) - 1e-7 && $point[1] <= max($start[1], $end[1]) + 1e-7;
+    }
+
+    private function orientation(array $a, array $b, array $c): float
+    {
+        return ($b[0] - $a[0]) * ($c[1] - $a[1]) - ($b[1] - $a[1]) * ($c[0] - $a[0]);
     }
 
     private function pointInPolygon(float $x, float $y, array $polygon): bool

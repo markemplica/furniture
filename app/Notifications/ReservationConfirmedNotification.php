@@ -10,7 +10,7 @@ use Illuminate\Notifications\Notification;
 
 class ReservationConfirmedNotification extends Notification implements ShouldQueue
 {
-    use Queueable;
+    use Queueable, \App\Notifications\Concerns\RecoversReservationDelivery;
 
     public int $tries = 3;
     public int $timeout = 60;
@@ -22,12 +22,14 @@ class ReservationConfirmedNotification extends Notification implements ShouldQue
 
     public const SUBJECT = 'Reservation request approved - confirm item readiness';
 
-    public function __construct(public Reservation $reservation) {}
+    public function __construct(public Reservation $reservation, public ?int $notificationLogId = null) {}
 
     public function via(object $notifiable): array
     {
         return ['mail'];
     }
+
+    public function viaQueues(): array { return ['mail' => 'mail']; }
 
     public function toMail(object $notifiable): MailMessage
     {

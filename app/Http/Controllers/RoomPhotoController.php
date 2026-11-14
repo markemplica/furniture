@@ -25,6 +25,29 @@ class RoomPhotoController extends Controller
         return $this->image($photos, $path);
     }
 
+    public function thumbnail(Request $request, RoomImage $roomImage, RoomPhotoService $photos)
+    {
+        abort_unless($roomImage->user_id === $request->user()->id || $request->user()->isAdmin(), 403);
+        abort_unless($photos->exists($roomImage->image_path), 404);
+        abort_if($photos->size($roomImage->image_path) > 8388608, 404);
+        $bytes = $photos->get($roomImage->image_path);
+        $info = @getimagesizefromstring($bytes);
+        abort_unless($info && $info[0] * $info[1] <= 40000000, 404);
+        $image = @imagecreatefromstring($bytes);
+        abort_unless($image, 404);
+        $scale = min(1, 280 / max($info[0], $info[1]));
+        $thumb = imagescale($image, max(1, (int) round($info[0] * $scale)), max(1, (int) round($info[1] * $scale)));
+        imagedestroy($image);
+        abort_unless($thumb, 404);
+        imagesavealpha($thumb, true);
+        ob_start();
+        imagepng($thumb);
+        $output = ob_get_clean();
+        imagedestroy($thumb);
+
+        return response($output, 200, ['Content-Type' => 'image/png', 'Cache-Control' => 'private, no-store, max-age=0', 'X-Content-Type-Options' => 'nosniff', 'Vary' => 'Cookie, Authorization']);
+    }
+
     private function image(RoomPhotoService $photos, string $path)
     {
         abort_unless($photos->exists($path), 404);

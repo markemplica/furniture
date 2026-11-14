@@ -9,6 +9,10 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('room-images:prune')->daily();
+Schedule::command('feedback:prune')->daily();
+Schedule::command('registration-codes:prune')->hourly()->withoutOverlapping();
+Schedule::command('notifications:recover')->everyMinute()->withoutOverlapping();
+Schedule::command('room-images:retry-deletions')->everyFiveMinutes()->withoutOverlapping();
 
 Schedule::command('reservations:expire')->hourly();
 Schedule::command('reservations:remind')->hourly();
