@@ -6,7 +6,17 @@
 <div class="col-md-8"><label class="form-label" for="name">Product name <span class="furniture-required" aria-hidden="true">*</span></label><input class="form-control @error('name') is-invalid @enderror" id="name" placeholder="e.g. Narra six-seat dining table" name="name" aria-describedby="name-error" aria-invalid="{{ $errors->has('name') ? 'true' : 'false' }}" value="{{ old('name',$product->name ?? '') }}" required>
 @error('name')<p class="invalid-feedback d-block mb-0" id="name-error" role="alert">{{ $message }}</p>@enderror
 </div>
-<div class="col-md-4"><label class="form-label" for="category">Category <span class="furniture-required" aria-hidden="true">*</span></label><input class="form-control @error('category') is-invalid @enderror" id="category" placeholder="e.g. Dining Table" name="category" aria-describedby="category-error" aria-invalid="{{ $errors->has('category') ? 'true' : 'false' }}" value="{{ old('category',$product->category ?? '') }}" required>
+<div class="col-md-4"><label class="form-label" for="category">Category <span class="furniture-required" aria-hidden="true">*</span></label>
+@php($selectedCategory = old('category', $product->category ?? ''))
+<select class="form-select @error('category') is-invalid @enderror" id="category" name="category" aria-describedby="category-error" aria-invalid="{{ $errors->has('category') ? 'true' : 'false' }}" required>
+    <option value="">Choose category</option>
+    @if(is_string($selectedCategory) && $selectedCategory !== '' && !in_array($selectedCategory, config('furnicraft.catalog_categories', []), true))
+        <option value="{{ $selectedCategory }}" selected>{{ $selectedCategory }} (current category)</option>
+    @endif
+    @foreach(config('furnicraft.catalog_categories', []) as $category)
+        <option value="{{ $category }}" @selected($selectedCategory === $category)>{{ $category }}</option>
+    @endforeach
+</select>
 @error('category')<p class="invalid-feedback d-block mb-0" id="category-error" role="alert">{{ $message }}</p>@enderror
 </div>
 <div class="col-12"><label class="form-label" for="description">Description <span class="furniture-required" aria-hidden="true">*</span></label><textarea class="form-control @error('description') is-invalid @enderror" id="description" placeholder="Describe the furniture, materials, and useful product details." name="description" aria-describedby="description-error" aria-invalid="{{ $errors->has('description') ? 'true' : 'false' }}" rows="4" required>{{ old('description',$product->description ?? '') }}</textarea>

@@ -18,7 +18,7 @@ class ReservationStatusTimelineTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_new_request_sends_one_logged_pending_email(): void
+    public function test_new_request_is_recorded_without_a_submission_receipt_email(): void
     {
         Notification::fake();
         $customer = User::factory()->create();
@@ -28,14 +28,13 @@ class ReservationStatusTimelineTest extends TestCase
         $this->actingAs($customer)->post(route('reservations.store'), $payload)
             ->assertRedirect(route('reservations.index'));
         $reservation = Reservation::sole();
-        $log = NotificationLog::where('type', 'reservation_pending')->sole();
-        $this->assertSame('queued', $log->status);
-        $this->assertSame($reservation->reference, $log->payload['reservation']);
-        Notification::assertSentTo($customer, ReservationStatusNotification::class,
-            fn (ReservationStatusNotification $notification) => $notification->status === 'pending' && $notification->notificationLogId === $log->id);
+        $this->assertSame('pending', $reservation->status);
+        $this->assertSame(['pending'], $reservation->statusTimeline()->pluck('status')->all());
+        Notification::assertNothingSent();
 
         $this->post(route('reservations.store'), $payload)->assertSessionHasErrors('furniture_product_id');
-        $this->assertSame(1, NotificationLog::where('type', 'reservation_pending')->count());
+        $this->assertDatabaseCount('notification_logs', 0);
+        Notification::assertNothingSent();
     }
 
     public function test_approval_readiness_and_completion_have_one_email_each_and_a_real_timeline(): void

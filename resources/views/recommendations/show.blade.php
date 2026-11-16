@@ -112,6 +112,7 @@
 
             <script type="application/json" data-preview-analysis>@json($room->analysis ?? [])</script>
             <div class="room-preview-frame room-comparison" data-room-preview role="slider" tabindex="0" aria-label="Before and after preview. Use the arrow keys to move the divider." aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" data-split="50"
+                data-visual-scale-policy='@json(config("roompreview.visual_scale"))'
                 data-product-id="{{ $previewProduct->id }}" data-product-name="{{ $previewProduct->name }}"
                 data-product-width="{{ $previewProduct->width_cm }}" data-product-depth="{{ $previewProduct->depth_cm }}" data-product-height="{{ $previewProduct->height_cm }}" data-product-dimensions-estimated="{{ $previewProduct->dimensions_estimated ? 'true' : 'false' }}"
                 data-product-type="{{ $previewProduct->recommendationType() }}" data-product-category="{{ $previewProduct->category }}"

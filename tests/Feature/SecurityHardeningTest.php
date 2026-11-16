@@ -26,6 +26,7 @@ class SecurityHardeningTest extends TestCase
         foreach ([null, 'IncorrectPassword123'] as $password) {
             $this->actingAs($user)->from(route('profile.edit'))->patch(route('profile.update'), [
                 'name' => $user->name, 'email' => 'new-address@example.test', 'current_password' => $password,
+                'phone' => '0917 123 4567',
             ])->assertSessionHasErrors('current_password')->assertSessionMissing('_old_input.current_password');
             $this->assertSame($originalEmail, $user->fresh()->email);
             $this->assertTrue($user->fresh()->is_active);
@@ -38,6 +39,7 @@ class SecurityHardeningTest extends TestCase
         $user = User::factory()->create(['role' => 'customer']);
         $this->actingAs($user)->patch(route('profile.update'), [
             'name' => 'Updated Name', 'email' => $user->email, 'role' => 'admin',
+            'phone' => '0917 123 4567',
         ])->assertSessionHasNoErrors()->assertRedirect(route('profile.edit'));
         $this->assertSame('customer', $user->fresh()->role);
         $this->assertSame('Updated Name', $user->fresh()->name);

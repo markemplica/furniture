@@ -28,19 +28,9 @@ class ReservationController extends Controller
 
     public function store(ReservationStoreRequest $request)
     {
-        $notifier = app(ReservationStatusNotifier::class);
         $data = $request->validated();
         if ($request->boolean('customization_requested')) {
-            $dimensionValues = collect([
-                $data['custom_width_cm'] ?? null,
-                $data['custom_depth_cm'] ?? null,
-                $data['custom_height_cm'] ?? null,
-            ]);
-            $dimensions = $dimensionValues->contains(fn ($value) => filled($value))
-                ? $dimensionValues->map(fn ($value) => filled($value) ? $value : '—')->implode(' × ')
-                : null;
             $customDetails = collect([
-                'Requested dimensions (W × D × H cm)' => $dimensions,
                 'Preferred wood' => $data['custom_wood_type'] ?? null,
                 'Preferred finish' => $data['custom_varnish_finish'] ?? null,
                 'Design/details' => $data['custom_design_notes'] ?? null,
@@ -49,26 +39,24 @@ class ReservationController extends Controller
             $customerNotes = trim((string) ($data['notes'] ?? ''));
             $data['notes'] = $customNote.($customerNotes !== '' ? "\n\nCUSTOMER NOTES:\n".$customerNotes : '');
         }
-        unset($data['customization_requested'], $data['custom_width_cm'], $data['custom_depth_cm'], $data['custom_height_cm'], $data['custom_wood_type'], $data['custom_varnish_finish'], $data['custom_design_notes']);
+        unset($data['customization_requested'], $data['custom_wood_type'], $data['custom_varnish_finish'], $data['custom_design_notes']);
         $product = FurnitureProduct::where('status', 'active')->findOrFail($data['furniture_product_id']);
         if (! empty($data['recommendation_id'])) {
             $recommendation = Recommendation::where('user_id', $request->user()->id)->findOrFail($data['recommendation_id']);
             abort_unless($recommendation->items()->where('furniture_product_id', $product->id)->exists(), 422, 'That item is not part of this recommendation.');
         }
-        $result = DB::transaction(function () use ($data, $request, $notifier) {
+        $reservation = DB::transaction(function () use ($data, $request) {
             // Lock an existing row even when there are no previous reservations.
             $request->user()->newQuery()->whereKey($request->user()->id)->lockForUpdate()->firstOrFail();
             $duplicate = Reservation::where('user_id', $request->user()->id)->where('furniture_product_id', $data['furniture_product_id'])->whereIn('status', ['pending', 'confirmed'])->lockForUpdate()->exists();
             if ($duplicate) return null;
             $reservation = Reservation::create(array_merge($data, ['reference' => 'FC-'.now()->format('ymd').'-'.strtoupper(Str::random(6)), 'user_id' => $request->user()->id, 'expires_at' => now()->addDays(7)]));
             $reservation->transactions()->create(['actor_id' => $request->user()->id, 'action' => 'submitted', 'notes' => 'Reservation request submitted by customer.']);
-            return [$reservation, $notifier->record($reservation, 'pending')];
+            return $reservation;
         });
-        if (! $result) {
+        if (! $reservation) {
             throw \Illuminate\Validation\ValidationException::withMessages(['furniture_product_id' => 'You already have an active request for this item.']);
         }
-        [$reservation, $log] = $result;
-        $notifier->dispatch($reservation, $log);
         if ($request->expectsJson()) {
             return response()->json(['message' => "Reservation {$reservation->reference} was submitted for review. No payment has been collected.", 'reference' => $reservation->reference], 201);
         }

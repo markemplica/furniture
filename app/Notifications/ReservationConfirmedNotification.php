@@ -20,7 +20,7 @@ class ReservationConfirmedNotification extends Notification implements ShouldQue
         return [30, 120, 300];
     }
 
-    public const SUBJECT = 'Reservation request approved - confirm item readiness';
+    public const SUBJECT = 'Your reservation is approved - Lance Furniture Shop';
 
     public function __construct(public Reservation $reservation, public ?int $notificationLogId = null) {}
 
@@ -33,6 +33,16 @@ class ReservationConfirmedNotification extends Notification implements ShouldQue
 
     public function toMail(object $notifiable): MailMessage
     {
+        $shopPhone = trim((string) config('furnicraft.shop_phone'));
+        $details = [
+            ['label' => 'REFERENCE', 'value' => $this->reservation->reference],
+            ['label' => 'FURNITURE', 'value' => $this->reservation->product->name],
+            ['label' => 'SHOP', 'value' => $this->reservation->branch],
+        ];
+        if ($shopPhone !== '') {
+            $details[] = ['label' => 'SHOP CONTACT NUMBER', 'value' => $shopPhone];
+        }
+
         return (new MailMessage)
             ->subject(self::SUBJECT)
             ->view([
@@ -40,19 +50,18 @@ class ReservationConfirmedNotification extends Notification implements ShouldQue
                 'text' => 'emails.customer-notification-text',
             ], [
                 'eyebrow' => 'RESERVATION UPDATE',
-                'heading' => 'Your request was approved',
+                'heading' => 'Your reservation is approved',
                 'intro' => 'Good news, '.$notifiable->name.'. Lance Furniture Shop reviewed and approved your reservation request.',
+                'bodyText' => $shopPhone !== ''
+                    ? 'You can visit Lance Furniture Shop to discuss your reservation, or contact us at '.$shopPhone.' for assistance.'
+                    : 'You can visit Lance Furniture Shop to discuss your reservation. Please contact the shop to arrange your visit.',
                 'codeLabel' => null,
                 'code' => null,
                 'expiry' => null,
-                'details' => [
-                    ['label' => 'REFERENCE', 'value' => $this->reservation->reference],
-                    ['label' => 'FURNITURE', 'value' => $this->reservation->product->name],
-                    ['label' => 'SHOP', 'value' => $this->reservation->branch],
-                ],
+                'details' => $details,
                 'buttonLabel' => 'View reservation request',
                 'buttonUrl' => rtrim((string) config('app.url'), '/').route('reservations.index', [], false),
-                'note' => 'Approval confirms the request review only. Please contact the shop before visiting to confirm physical availability, item readiness, and operating hours. No purchase or payment has been made through FurniCraft.',
+                'note' => 'Please contact the shop before visiting to confirm physical availability, item readiness, and operating hours. No purchase or payment has been made through FurniCraft.',
             ]);
     }
 }

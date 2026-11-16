@@ -28,6 +28,9 @@ class RoomController extends Controller
         $data = $request->validated();
         $preference = $request->user()->preference()->first();
         if (! $preference || blank($preference->furniture_type)) {
+            if ($request->expectsJson()) {
+                return response()->json(['message' => 'Save your furniture preferences before uploading a room image.'], 422);
+            }
             return redirect()->to(route('preferences.edit').'#preference-form')->withErrors(['workflow' => 'Save your furniture preferences before uploading a room image.']);
         }
 
@@ -59,9 +62,7 @@ class RoomController extends Controller
                     ->where('image_sha256', $photoMetadata['sha256']);
                 if ($consented) {
                     $cachedQuery->where('analysis_status', 'completed')->whereJsonContains('analysis->gemini_used', true);
-                    if (AiProvider::name() === 'groq') {
-                        $cachedQuery->where('gemini_consent_version', AiProvider::consentVersion());
-                    }
+                    $cachedQuery->where(fn ($query) => $query->where('gemini_consent_version', AiProvider::consentVersion())->orWhereNull('gemini_consent_version'));
                 } else {
                     $cachedQuery->whereIn('analysis_status', ['completed', 'fallback']);
                 }
@@ -121,12 +122,18 @@ class RoomController extends Controller
             AnalyzeRoomImage::dispatch($room->id, 'all catalog furniture');
         }
         $room->refresh();
+        if ($request->expectsJson()) {
+            return response()->json([
+                'room_id' => $room->id,
+                'html' => view('preferences._room-option', ['room' => $room, 'activeRoomId' => $room->id])->render(),
+            ], 201);
+        }
         $message = in_array($room->analysis_status, ['completed', 'fallback'], true)
             ? 'Your room is ready and selected for recommendations.'
             : 'Your room was uploaded. FurniCraft is analyzing it in the background.';
 
         if (($data['return_to'] ?? null) === 'recommendations') {
-            return redirect()->to(route('preferences.edit', ['room' => $room->id]).'#room-preview')->with('success', $message);
+            return redirect()->to(route('preferences.edit', ['room' => $room->id]).'#room-preview');
         }
 
         return redirect()->route('room.visualize', $room)->with('success', $message);
@@ -180,6 +187,8 @@ class RoomController extends Controller
         RoomImage::recoverStalledForUser($request->user()->id);
         $roomImage->refresh();
         abort_if(in_array($roomImage->analysis_status, ['queued', 'processing', 'retrying'], true), 422, 'Room analysis is already in progress.');
+        abort_if($roomImage->analysis_attempts > 0 && $roomImage->analyzed_at && $roomImage->analyzed_at->gt(now()->subMinute()),
+            429, 'Please wait one minute before purchasing another room analysis.');
 
         if (! AiProvider::hasPhotoConsent($roomImage)) {
             $message = 'AI analysis is off for this photo or the current provider. Upload the photo again and choose AI consent; the local estimate remains available.';
@@ -194,7 +203,7 @@ class RoomController extends Controller
             'analysis_error' => null,
             'analysis_requested_at' => now(),
         ]);
-        AnalyzeRoomImage::dispatch($roomImage->id, 'all catalog furniture');
+        AnalyzeRoomImage::dispatch($roomImage->id, 'all catalog furniture', true);
         $roomImage->refresh();
 
         $message = match ($roomImage->analysis_status) {

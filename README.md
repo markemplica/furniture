@@ -122,6 +122,8 @@ The model name is configurable so it can be changed without modifying applicatio
 
 ## Email configuration
 
+Submitting a reservation saves the pending request without sending a receipt email. Approving it automatically queues one approval email to the customer. The email includes the reservation reference, furniture, and instructions to visit Lance Furniture Shop or call the number set in `FURNICRAFT_SHOP_PHONE`. Set that variable to the shop's contact number in `.env`. Keep the dedicated `mail` queue worker running for delivery; the admin reservation list shows the email's queued, sent, or failed status.
+
 Email verification, password-reset, reservation-confirmation notifications, and feedback email use Laravel's queue. Configure a real mail provider and `ADMIN_FEEDBACK_EMAIL` for deployment:
 
 ```env

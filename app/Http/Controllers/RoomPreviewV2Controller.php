@@ -38,6 +38,10 @@ class RoomPreviewV2Controller extends Controller
                 'room_image_id' => $roomImage->id,
                 'furniture_product_id' => $product->id,
             ]);
+            if ($request->boolean('retry') && in_array($generation->status, ['fallback', 'failed'], true)
+                && $generation->completed_at && $generation->completed_at->gt(now()->subMinute())) {
+                abort(429, 'Please wait one minute before another paid preview attempt. Your local preview remains available.');
+            }
             if ($generation->exists && hash_equals((string) $generation->cache_key, $cacheKey)
                 && in_array($generation->status, ['queued', 'processing', 'retrying', 'completed', 'fallback'], true)
                 && ! ($request->boolean('retry') && $generation->status === 'fallback')) {

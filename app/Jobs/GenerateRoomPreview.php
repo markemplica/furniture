@@ -22,7 +22,7 @@ class GenerateRoomPreview implements ShouldQueue, ShouldBeUnique
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 2;
+    public int $tries = 1;
 
     public int $timeout = 540;
 
@@ -48,11 +48,8 @@ class GenerateRoomPreview implements ShouldQueue, ShouldBeUnique
             ->where('furniture_product_id', $this->productId)->first();
 
         if (! $room || ! $product || ! $generation) return;
+        if (! in_array($generation->status, ['queued', 'retrying'], true)) return;
 
-        if (\App\Services\AiProvider::name() === 'groq') {
-            $generation->update(['status' => 'fallback', 'message' => 'Groq is used for room understanding. The local 2D preview remains available; generated images are disabled.']);
-            return;
-        }
 
         if (! $room->gemini_consent_at) {
             $generation->update(['status' => 'cancelled', 'message' => 'AI processing is disabled for this photo.']);

@@ -17,7 +17,8 @@ use Throwable;
 
 class RoomPreviewV2Service
 {
-    public const PLACEMENT_VERSION = 'photo-2d-placement-v5';
+    // Include local rendering changes so newly requested artifacts do not reuse old shadows.
+    public const PLACEMENT_VERSION = 'photo-2d-placement-v5-lighting-v1';
 
     private int $providerCallStart = 0;
 
@@ -56,7 +57,7 @@ class RoomPreviewV2Service
 
         $generation->update(['status' => 'processing', 'attempts' => (int) $generation->attempts + 1, 'failure_code' => null, 'message' => null]);
         $this->previousProviderCalls = (int) data_get($generation->metrics_json, 'provider_calls', 0);
-        $this->gemini->limitProviderRequests(max(0, (int) config('roompreview.max_provider_calls', 8) - $this->previousProviderCalls));
+        $this->gemini->limitProviderRequests(max(0, min(2, (int) config('roompreview.max_provider_calls', 8)) - $this->previousProviderCalls));
         $providerCalls = 0;
         $tempPath = null;
         $previousActor = Context::getHidden('ai_user_id');
@@ -107,8 +108,8 @@ class RoomPreviewV2Service
             $aiFailureCode = $analysisFailure;
             $verification = null;
             $guard = null;
-            if (! $analysisFailure && AiProvider::name() === 'gemini' && $room->gemini_consent_at && $this->gemini->isConfigured()) {
-                for ($attempt = 0; $attempt < min(3, (int) config('roompreview.max_generation_attempts', 3)); $attempt++) {
+            if (! $analysisFailure && config('services.gemini.image_enabled') && AiProvider::name() === 'gemini' && $room->gemini_consent_at && $this->gemini->isConfigured()) {
+                for ($attempt = 0; $attempt < min(1, (int) config('roompreview.max_generation_attempts', 1)); $attempt++) {
                     if (! $this->hasConsent($room->id)) {
                         break;
                     }
@@ -272,44 +273,19 @@ class RoomPreviewV2Service
             return [$analysis, 'analysis_in_progress'];
         }
 
-        $version = (string) config('roompreview.pipeline_version', 'v2').(AiProvider::name() === 'groq' ? '-groq-v1' : '');
+        $version = (string) config('roompreview.pipeline_version', 'v2');
         $lock = Cache::lock('room-analysis:'.$hash.':'.$version, 240);
-        if (! $lock->get()) {
-            return [$analysis, 'analysis_in_progress'];
+        if (! $lock->get()) return [$analysis, 'analysis_in_progress'];
+        $lock->release();
+        $cached = RoomPreviewAnalysis::where('image_sha256', $hash)->where('pipeline_version', $version)
+            ->where('status', 'completed')->first();
+        if ($cached && is_array($cached->analysis) && ($cached->analysis['gemini_used'] ?? false)) {
+            return [$cached->analysis, null];
         }
-        try {
-            $cache = RoomPreviewAnalysis::firstOrCreate(['image_sha256' => $hash, 'pipeline_version' => $version], ['status' => 'queued', 'attempts' => 0]);
-            if ($cache->status === 'completed' && is_array($cache->analysis)) {
-                return [$cache->analysis, null];
-            }
-            if ($cache->status === 'fallback' && $cache->updated_at->gt(now()->subMinute())) {
-                return [$analysis, $cache->failure_code ?: 'analysis_unavailable'];
-            }
-            $cache->update(['status' => 'processing', 'attempts' => $cache->attempts + 1]);
-            if (! $this->hasConsent($room->id)) {
-                return [$this->gemini->roomFallback(null, null, 'all catalog furniture'), 'consent_revoked'];
-            }
-            \Illuminate\Support\Facades\Context::addHidden('ai_photo_transfer', ['room_id' => $room->id, 'purpose' => 'room_preview_v2_analysis', 'user_id' => $room->user_id]);
-            try {
-                $result = $this->gemini->analyzeRoom($path, null, null, 'all catalog furniture', true);
-                if (($result['gemini_used'] ?? false) && $this->hasConsent($room->id)) {
-                    $cache->update(['status' => 'completed', 'analysis' => $result, 'analyzed_at' => now(), 'failure_code' => null]);
-
-                    return [$result, null];
-                }
-                $failure = 'analysis_unavailable';
-            } catch (Throwable $exception) {
-                $failure = $this->failureCode($exception, 'analysis_unavailable');
-                Log::warning('Preview geometry unavailable', ['exception' => $exception::class, 'failure_code' => $failure]);
-            }
-            $cache->update(['status' => 'fallback', 'analysis' => null, 'failure_code' => $failure]);
-
-            return [$this->gemini->roomFallback(null, null, 'all catalog furniture'), $failure];
-        } finally {
-            $lock->release();
-        }
+        // Changing furniture must not purchase another analysis of the same room.
+        // The explicit room re-analysis action owns all paid geometry requests.
+        return [$analysis, 'analysis_unavailable'];
     }
-
     private function savePlacementFallback(RoomPreviewGeneration $generation, array $placement, float $confidence, string $label, string $failureCode, int $started, int $calls): void
     {
         $data = [

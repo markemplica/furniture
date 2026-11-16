@@ -11,13 +11,19 @@ use App\Models\User;
 use App\Notifications\EmailVerificationCodeNotification;
 use App\Notifications\PasswordResetCodeNotification;
 use App\Notifications\ReservationConfirmedNotification;
+use App\Notifications\ReservationStatusNotification;
 use App\Services\RegistrationVerificationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Notifications\Events\NotificationFailed;
 use Illuminate\Notifications\Events\NotificationSent;
+use Illuminate\Notifications\SendQueuedNotifications;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -140,18 +146,103 @@ class NotificationDeliveryLogTest extends TestCase
 
     public function test_mail_worker_processes_mail_while_ai_work_remains_queued(): void
     {
-        config(['queue.default' => 'database']);
+        config([
+            'queue.default' => 'database',
+            'mail.default' => 'array',
+            'furnicraft.shop_phone' => '09107664249',
+        ]);
         $customer = User::factory()->create();
         $reservation = $this->reservation($customer);
         \App\Jobs\AnalyzeRoomImage::dispatch(999999);
-        $log = $this->log($customer, $reservation);
-        app(\App\Services\ReservationStatusNotifier::class)->dispatch($reservation, $log);
+        $admin = User::factory()->create(['role' => 'admin']);
+        $this->actingAs($admin)->patch(route('admin.reservations.update', $reservation), ['status' => 'confirmed'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+        $log = NotificationLog::where('type', 'reservation_confirmed')->sole();
         $this->assertDatabaseHas('jobs', ['queue' => 'ai']);
         $this->assertDatabaseHas('jobs', ['queue' => 'mail']);
         $this->artisan('queue:work', ['connection' => 'database', '--queue' => 'mail', '--once' => true, '--tries' => 1])->assertSuccessful();
         $this->assertSame('sent', $log->fresh()->status);
         $this->assertDatabaseHas('jobs', ['queue' => 'ai']);
         $this->assertDatabaseMissing('jobs', ['queue' => 'mail']);
+
+        $messages = Mail::mailer()->getSymfonyTransport()->messages();
+        $this->assertCount(1, $messages);
+        $email = $messages->sole()->getOriginalMessage();
+        $this->assertSame($customer->email, $email->getTo()[0]->getAddress());
+        $this->assertSame(ReservationConfirmedNotification::SUBJECT, $email->getSubject());
+        foreach ([$email->getHtmlBody(), $email->getTextBody()] as $body) {
+            $this->assertStringContainsString('Your reservation is approved', $body);
+            $this->assertStringContainsString('You can visit Lance Furniture Shop', $body);
+            $this->assertStringContainsString('or contact us at 09107664249', $body);
+            $this->assertStringContainsString($reservation->reference, $body);
+            $this->assertStringContainsString($reservation->product->name, $body);
+        }
+
+        $this->patch(route('admin.reservations.update', $reservation), ['status' => 'confirmed'])->assertRedirect();
+        $this->assertDatabaseMissing('jobs', ['queue' => 'mail']);
+        $this->assertSame(1, NotificationLog::where('type', 'reservation_confirmed')->count());
+    }
+
+    public function test_migration_permanently_deletes_only_receipt_email_jobs_and_logs(): void
+    {
+        config(['queue.default' => 'database', 'mail.default' => 'array']);
+        $customer = User::factory()->create();
+        $reservation = $this->reservation($customer);
+        $log = NotificationLog::create([
+            'user_id' => $customer->id, 'type' => 'reservation_pending',
+            'recipient' => $customer->email, 'subject' => 'Reservation request received',
+            'status' => 'queued', 'payload' => ['reservation' => $reservation->reference],
+        ]);
+
+        $sentReceiptLog = $log->replicate();
+        $sentReceiptLog->fill(['status' => 'sent', 'sent_at' => now()])->save();
+        $approvalLog = $this->log($customer, $reservation);
+        $receiptJobId = Queue::pushOn('mail', new SendQueuedNotifications(
+            $customer, new ReservationStatusNotification($reservation, 'pending', $log->id), ['mail'],
+        ));
+        $approvalJobId = Queue::pushOn('mail', new SendQueuedNotifications(
+            $customer, new ReservationConfirmedNotification($reservation, $approvalLog->id), ['mail'],
+        ));
+        $readyJobId = Queue::pushOn('mail', new SendQueuedNotifications(
+            $customer, new ReservationStatusNotification($reservation, 'ready'), ['mail'],
+        ));
+        $aiJobId = Queue::pushOn('ai', new \App\Jobs\AnalyzeRoomImage(999999));
+
+        $failedJobIds = [];
+        foreach ([$receiptJobId, $approvalJobId] as $jobId) {
+            $failedJobIds[] = DB::table('failed_jobs')->insertGetId([
+                'uuid' => (string) Str::uuid(), 'connection' => 'database', 'queue' => 'mail',
+                'payload' => DB::table('jobs')->where('id', $jobId)->value('payload'),
+                'exception' => 'Test failure', 'failed_at' => now(),
+            ]);
+        }
+
+        $migration = require database_path('migrations/2026_11_14_000001_remove_reservation_receipt_emails.php');
+        $migration->up();
+        $migration->up();
+
+        $this->assertDatabaseMissing('jobs', ['id' => $receiptJobId]);
+        foreach ([$approvalJobId, $readyJobId, $aiJobId] as $jobId) {
+            $this->assertDatabaseHas('jobs', ['id' => $jobId]);
+        }
+        $this->assertDatabaseMissing('failed_jobs', ['id' => $failedJobIds[0]]);
+        $this->assertDatabaseHas('failed_jobs', ['id' => $failedJobIds[1]]);
+        $this->assertDatabaseMissing('notification_logs', ['id' => $log->id]);
+        $this->assertDatabaseMissing('notification_logs', ['id' => $sentReceiptLog->id]);
+        $this->assertDatabaseHas('notification_logs', ['id' => $approvalLog->id]);
+        $this->assertDatabaseHas('reservations', ['id' => $reservation->id, 'status' => 'pending']);
+    }
+
+    public function test_approval_email_omits_contact_number_when_none_is_configured(): void
+    {
+        config(['furnicraft.shop_phone' => '']);
+        $customer = User::factory()->create();
+        $reservation = $this->reservation($customer);
+        $mail = (new ReservationConfirmedNotification($reservation))->toMail($customer);
+
+        $this->assertStringContainsString('You can visit Lance Furniture Shop', $mail->viewData['bodyText']);
+        $this->assertStringNotContainsString('contact us at', $mail->viewData['bodyText']);
+        $this->assertNotContains('SHOP CONTACT NUMBER', array_column($mail->viewData['details'], 'label'));
     }
 
     private function reservation(User $customer): Reservation

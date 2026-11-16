@@ -29,6 +29,26 @@ use Tests\TestCase;
 
 class ExampleTest extends TestCase
 {
+    public function test_room_photo_upload_returns_selected_card_without_redirect_or_success_flash(): void
+    {
+        Storage::fake('local');
+        Queue::fake();
+        $user = User::factory()->create();
+        $user->preference()->create(['furniture_type' => 'Door', 'budget_min' => 1000, 'budget_max' => 10000]);
+
+        $response = $this->actingAs($user)->postJson('/room', [
+            'room_image' => UploadedFile::fake()->createWithContent('room.png', file_get_contents(base_path('tests/Fixtures/room-600.png'))),
+            'return_to' => 'recommendations',
+        ])->assertCreated()->assertSessionMissing('success');
+
+        $room = $user->roomImages()->sole();
+        $response->assertJsonPath('room_id', $room->id);
+        $this->assertStringContainsString('data-room-option', $response->json('html'));
+        $this->assertStringContainsString('data-room-ready="true"', $response->json('html'));
+        Queue::assertNothingPushed();
+        Http::assertNothingSent();
+    }
+
     use RefreshDatabase;
 
     public function test_recommendation_copy_matches_the_local_generation_flow(): void
@@ -53,7 +73,7 @@ class ExampleTest extends TestCase
             ->assertSee('consented room-photo analysis, furnished-room preview generation when requested, and chatbot answers');
         $this->actingAs($user)->get(route('preferences.edit'))
             ->assertOk()
-            ->assertSee('Furniture preferences')
+            ->assertSee('Plan your room.')
             ->assertSee('Generate recommendations')
             ->assertDontSee('AI-powered matching');
         $this->get(route('recommendations.show', $recommendation))
@@ -298,9 +318,9 @@ class ExampleTest extends TestCase
             ->assertSee('data-preferences-form', false)
             ->assertSee('data-preferences-status', false)
             ->assertSee('data-preferences-submit', false)
-            ->assertSee('Room measurements (optional)')
-            ->assertSee('Room measurements &amp; notes', false)
-            ->assertSee('Photo previews use the visible space and perspective in your photo');
+            ->assertDontSee('Room measurements &amp; notes', false)
+            ->assertDontSee('id="preference_room_width_m"', false)
+            ->assertDontSee('id="notes"', false);
 
         $this->actingAs($user)->postJson(route('preferences.update'), [
             'furniture_type' => 'Table',
@@ -474,14 +494,14 @@ class ExampleTest extends TestCase
         $this->actingAs($user)->get(route('preferences.edit', ['room' => $room->id]))
             ->assertOk()
             ->assertSee('Plan your room.')
-            ->assertSee('Furniture preferences')
+            ->assertSee('Furniture type')
             ->assertSee('Room photo')
             ->assertSee('<span data-saved-furniture-type>Table</span>', false)
             ->assertSee('data-generate-recommendations', false)
             ->assertDontSee('Step 3 · AI-powered')
             ->assertSee('Selected')
             ->assertSee('data-room-option', false)
-            ->assertSee('Click a room to use it for your recommendation.')
+            ->assertSee('Choose a room photo, then press OK to use it.')
             ->assertDontSee('Select this room');
 
         $this->actingAs($user)->post('/recommendations', ['room_image_id' => $room->id]);
@@ -577,7 +597,7 @@ class ExampleTest extends TestCase
             ->assertOk()
             ->assertSee('value="Door"', false)
             ->assertSee('Door')
-            ->assertSeeInOrder(['id="preference-form"', 'name="furniture_type"', 'id="room-preview"', 'id="recommendation-form"'], false)
+            ->assertSeeInOrder(['id="room-preview"', 'id="preference-form"', 'name="furniture_type"', 'id="recommendation-form"'], false)
             ->assertDontSee('Step 3 · AI-powered');
 
         $this->assertSame('Door', $user->preference()->firstOrFail()->furniture_type);
@@ -785,7 +805,8 @@ class ExampleTest extends TestCase
             $config = $request->data()['generationConfig'] ?? [];
 
             return data_get($config, 'responseMimeType') === 'application/json'
-                && data_get($config, 'responseJsonSchema.type') === 'object'
+                && data_get($config, 'responseJsonSchema') === null
+                && str_contains((string) data_get($request->data(), 'contents.0.parts.2.text'), '"type":"object"')
                 && str_contains((string) data_get($request->data(), 'contents.0.parts.0.text'), 'Known room width: unknown m; depth: unknown m.');
         });
         $this->actingAs($user)->post('/room', [
@@ -1245,7 +1266,7 @@ class ExampleTest extends TestCase
         $this->assertFalse($room->analysis['gemini_used']);
         $this->assertStringContainsString('did not return usable room geometry', $room->analysis_error);
         $this->getJson(route('room.analysis-status', $room))->assertOk()->assertJson(['status' => 'fallback', 'ready' => true]);
-        Http::assertSentCount(2);
+        Http::assertSentCount(1);
     }
 
     public function test_room_analysis_is_queued_reported_and_can_be_retried_without_another_upload(): void

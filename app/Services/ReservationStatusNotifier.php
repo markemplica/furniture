@@ -78,7 +78,7 @@ class ReservationStatusNotifier
     public function recover(): int
     {
         $count = 0;
-        NotificationLog::whereIn('type', ['reservation_pending', 'reservation_confirmed', 'reservation_ready', 'reservation_completed', 'reservation_cancelled', 'reservation_declined', 'reservation_no_show'])
+        NotificationLog::whereIn('type', ['reservation_confirmed', 'reservation_ready', 'reservation_completed', 'reservation_cancelled', 'reservation_declined', 'reservation_no_show'])
             ->where('status', '!=', 'sent')->where('dispatch_attempts', '<', 8)
             ->where(fn ($query) => $query->whereNull('dispatch_after')->orWhere('dispatch_after', '<=', now()))
             ->orderBy('id')->chunkById(100, function ($logs) use (&$count) {

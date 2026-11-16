@@ -35,15 +35,7 @@ return [
         ],
     ],
 
-    'ai' => ['provider' => env('AI_PROVIDER', 'gemini')],
-
-    'groq' => [
-        'key' => env('GROQ_API_KEY'),
-        'chat_model' => env('GROQ_CHAT_MODEL', 'openai/gpt-oss-20b'),
-        'model' => env('GROQ_VISION_MODEL', 'qwen/qwen3.8-27b'),
-        'allowed_text_models' => ['openai/gpt-oss-20b', 'qwen/qwen3.8-27b'],
-        'max_inline_bytes' => 3000000,
-    ],
+    'ai' => ['provider' => 'gemini'],
 
     // Shared spending gates retain their existing names for deployed compatibility.
     'gemini' => [

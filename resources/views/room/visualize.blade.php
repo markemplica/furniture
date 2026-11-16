@@ -103,6 +103,7 @@
 
                 <script type="application/json" data-preview-analysis>@json($roomImage->analysis ?? [])</script>
         <div class="room-preview-frame" data-room-preview
+            data-visual-scale-policy='@json(config("roompreview.visual_scale"))'
             data-product-id="{{ $selectedProduct?->id }}" data-product-name="{{ $selectedProduct?->name }}"
             data-product-width="{{ $selectedProduct?->width_cm }}" data-product-depth="{{ $selectedProduct?->depth_cm }}" data-product-height="{{ $selectedProduct?->height_cm }}" data-product-dimensions-estimated="{{ $selectedProduct?->dimensions_estimated ? 'true' : 'false' }}"
             data-product-type="{{ $selectedProduct?->recommendationType() }}" data-product-category="{{ $selectedProduct?->category }}"

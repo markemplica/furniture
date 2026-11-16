@@ -1,11 +1,104 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.document = { addEventListener() {} };
 await import('../public/js/room-preview-engine.js');
 
 const geometry = globalThis.RoomPreviewEngineTest;
+test('one optional visual check never follows corrections with additional paid requests', async () => {
+    const previous=globalThis.fetch; let calls=0;
+    globalThis.fetch=async()=>{calls++;return {ok:true,json:async()=>({valid:true,verdict:'needs_adjustment',realism_score:.4,corrections:{dx:.01,scale_factor:.95}})};};
+    const original={mode:'floor',x:.5,y:.8,width:.3,height:.3,depth:.1,scale:1};
+    const engine=Object.create(globalThis.RoomPreviewEngine.prototype);
+    Object.assign(engine,{result:original,runId:1,frame:{dataset:{verifyUrl:'/check',productId:'1'}},
+        canvas:{toDataURL:()=> 'data:image/jpeg;base64,AAAA'},warnings:[],setProgress(){},report(){},draw(){},hardValid:()=>true});
+    try {await engine.verifyLoop({},1);assert.equal(calls,1);assert.equal(engine.result,original);assert.equal(engine.verificationScore,.4);}
+    finally {globalThis.fetch=previous;}
+});
+test('room lighting stays neutral without reliable samples and gently follows warm directional light', () => {
+    assert.deepEqual(geometry.lightingProfile([]),[1,0,0]);
+    assert.deepEqual(geometry.lightingColor([90,120,160],[1,0,0],.5),[90,120,160]);
+    const samples=Array.from({length:48},(_,i)=>i%8<4 ? [100,90,80,.25] : [190,180,170,.75]);
+    const profile=geometry.lightingProfile(samples);
+    assert.ok(Math.abs(profile[0]-.9858666666666668)<1e-9, 'same room profile as the saved renderer');
+    assert.ok(profile[1]>0 && profile[2]>0);
+    const left=geometry.lightingColor([120,120,120],profile,0),right=geometry.lightingColor([120,120,120],profile,1);
+    assert.ok(left[0]>left[2] && right[0]>left[0]);
+    assert.deepEqual(geometry.lightingColor([255,255,255],profile,.5),[255,255,255]);
+    assert.ok(left.every(channel=>Math.abs(channel-120)<20));
+});
+
+test('perspective uses a bounded near-far projection without leaning the centre or moving floor contacts', () => {
+    const placement = {x:.5,y:.8,width:.2,height:.4,perspectiveDeg:24};
+    const quad = geometry.furnitureQuad(placement,200,200);
+    const near = Math.hypot(quad[0][0]-quad[3][0],quad[0][1]-quad[3][1]);
+    const far = Math.hypot(quad[1][0]-quad[2][0],quad[1][1]-quad[2][1]);
+    assert.ok(near > far && near/far < 1.2, 'turn remains subtle and preserves the photographed shape');
+    assert.deepEqual(geometry.furnitureQuad({...placement,perspectiveDeg:1000},200,200),quad);
+    for (const [u,v,point] of [[0,0,quad[0]],[1,0,quad[1]],[1,1,quad[2]],[0,1,quad[3]],[.5,1,[100,160]],[.5,0,[100,80]]]) {
+        geometry.projectQuad(quad,u,v).forEach((value,index)=>assert.ok(Math.abs(value-point[index]) < 1e-7));
+    }
+    const reversed = geometry.furnitureQuad({...placement,perspectiveDeg:-24},200,200);
+    assert.ok(reversed[0][1] > reversed[1][1], 'opposite angles reverse the nearer side');
+});
+
+test('visual sizing keeps tall furniture modest and never enlarges small items', () => {
+    const fixture = JSON.parse(readFileSync(new URL('./Fixtures/room-preview-scale.json', import.meta.url), 'utf8'));
+    for (const sample of fixture.cases) {
+        const engine = photoEngine();
+        Object.assign(engine, {scalePolicy: fixture.policy, itemType: sample.type, floorDetected: sample.floor,
+            room: {naturalWidth: sample.frame * 1000, naturalHeight: 1000}});
+        assert.ok(Math.abs(engine.boundedVisualWidth(sample.requested, sample.aspect) - sample.expected) < 1e-9, sample.type);
+    }
+});
+
+test('browser projection matches saved-image geometry for rotation, shear, tall items and frame edges', () => {
+    const cases = JSON.parse(readFileSync(new URL('./Fixtures/room-preview-geometry.json', import.meta.url), 'utf8').replace(/^\uFEFF/, ''));
+    for (const sample of cases) {
+        const [width, height] = sample.room, [itemWidth, itemHeight] = sample.item, p = sample.placement;
+        const quad = geometry.furnitureQuad({x:p.x_percent/100, y:p.y_percent/100, width:p.max_width_percent/100,
+            height:p.max_width_percent/100*width/height*itemHeight/itemWidth,
+            rotationDeg:p.rotation_deg, perspectiveDeg:p.perspective_deg}, width, height);
+        quad.flat().forEach((coordinate, i) => assert.ok(Math.abs(coordinate-sample.quad.flat()[i]) < 1e-7, sample.name));
+    }
+});
+
+test('furniture draws at full opacity while retaining its original cutout', () => {
+    const engine = Object.create(globalThis.RoomPreviewEngine.prototype);
+    const item = {naturalWidth: 20, naturalHeight: 40};
+    const calls = [];
+    engine.context = {
+        clearRect() {}, save() {}, restore() {}, translate() {}, rotate() {}, transform() {}, scale() {},
+        drawImage(image, ...args) { calls.push({image, args, alpha: this.globalAlpha}); },
+    };
+    Object.assign(engine, {
+        room: {}, item, analysis: {},
+        productImageBounds: {x: 0, y: 0, width: 20, height: 40},
+        canvasSize: () => ({width: 200, height: 200}),
+        dimensionsFromCatalog: () => true,
+        drawContactShadows() {},
+    });
+    engine.draw({mode: 'floor', x: .5, y: .8, width: .2, height: .4});
+    const furniture = calls.find((call) => call.image === item);
+    assert.equal(furniture.alpha, 1, 'solid source pixels must hide the room behind them');
+    assert.deepEqual(furniture.args.slice(0, 4), [0, 0, 20, 40], 'draw the original alpha cutout');
+});
+
+test('contact regions identify separate feet at different depths and ignore faint fringe', () => {
+    const pixels = new Uint8ClampedArray(40 * 40 * 4);
+    const fill = (left, top, right, bottom, alpha = 255) => {
+        for (let y = top; y <= bottom; y++) for (let x = left; x <= right; x++) pixels[(y * 40 + x) * 4 + 3] = alpha;
+    };
+    fill(5, 10, 34, 22); fill(5, 22, 9, 33); fill(30, 22, 34, 38);
+    fill(16, 35, 20, 39, 60);
+    const contacts = geometry.alphaContactRegions(pixels, 40, 40);
+    assert.equal(contacts.length, 2);
+    assert.deepEqual(contacts.map((c) => c.y), [39 / 40, 34 / 40]);
+    assert.ok(contacts.every((c) => c.x < .3 || c.x > .7));
+    assert.deepEqual(geometry.alphaContactRegions(new Uint8ClampedArray(40 * 40 * 4), 40, 40), []);
+});
 
 test('point-in-polygon accepts floor points and rejects points outside', () => {
     const floor = [[0.1, 0.4], [0.9, 0.4], [0.9, 0.95], [0.1, 0.95]];
@@ -449,6 +542,11 @@ test('a door without a detected opening shows analysis progress before a final p
     await engine.start();
     assert.equal(engine.status.textContent, 'No confirmed doorway available');
     assert.match(engine.guidance.textContent, /door has not been placed/);
+    assert.equal(engine.download.disabled, true);
+    engine.analysis.gemini_used = false;
+    await engine.start();
+    assert.equal(engine.status.textContent, 'Doorway analysis unavailable');
+    assert.match(engine.guidance.textContent, /does not mean the doorway frame is missing/);
     assert.equal(engine.download.disabled, true);
 });
 

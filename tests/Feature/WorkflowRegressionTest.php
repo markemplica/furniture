@@ -38,7 +38,11 @@ class WorkflowRegressionTest extends TestCase
         $customer = User::factory()->create();
         $product = $this->product();
         $this->actingAs($customer)->get(route('catalog.show', $product))
-            ->assertOk()->assertSee('data-reservation-open', false)->assertSee('<dialog', false);
+            ->assertOk()->assertSee('data-reservation-open', false)->assertSee('<dialog', false)
+            ->assertSee('Request a custom design (optional)')
+            ->assertDontSee('name="custom_width_cm"', false)
+            ->assertDontSee('name="custom_depth_cm"', false)
+            ->assertDontSee('name="custom_height_cm"', false);
         $payload = ['furniture_product_id' => $product->id, 'branch' => config('furnicraft.branch')];
         $this->postJson(route('reservations.store'), array_merge($payload, ['branch' => 'invalid']))
             ->assertUnprocessable()->assertJsonValidationErrors('branch');
@@ -50,6 +54,32 @@ class WorkflowRegressionTest extends TestCase
         $this->postJson(route('reservations.store'), $payload)
             ->assertUnprocessable()->assertJsonValidationErrors('furniture_product_id');
         $this->assertDatabaseCount('reservations', 1);
+    }
+
+    public function test_custom_design_requests_keep_materials_and_notes_without_custom_sizes(): void
+    {
+        Notification::fake();
+        $customer = User::factory()->create();
+        $product = $this->product();
+        $this->actingAs($customer)->postJson(route('reservations.store'), [
+            'furniture_product_id' => $product->id,
+            'customization_requested' => 1,
+            'custom_wood_type' => 'Mahogany',
+            'custom_varnish_finish' => 'Natural',
+            'custom_design_notes' => 'Use a floral carving on the backrest.',
+            'notes' => 'Please call before the visit.',
+            'custom_width_cm' => 150,
+            'custom_depth_cm' => 75,
+            'custom_height_cm' => 90,
+        ])->assertCreated();
+
+        $notes = Reservation::sole()->notes;
+        $this->assertStringContainsString('Preferred wood: Mahogany', $notes);
+        $this->assertStringContainsString('Preferred finish: Natural', $notes);
+        $this->assertStringContainsString('Design/details: Use a floral carving on the backrest.', $notes);
+        $this->assertStringContainsString('Please call before the visit.', $notes);
+        $this->assertStringNotContainsString('Requested dimensions', $notes);
+        $this->assertStringNotContainsString('150', $notes);
     }
 
     private function product(): FurnitureProduct

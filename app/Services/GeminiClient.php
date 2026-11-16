@@ -100,8 +100,13 @@ class GeminiClient
             throw new AiAggregateBudgetExceeded;
         }
         $chat = in_array($operation, ['chat_response', 'recommendation_explanation'], true);
+        $singleCall = in_array($operation, ['room_analysis', 'room_preview_verification', 'chat_response', 'recommendation_explanation'], true);
+        if ($singleCall) {
+            $retryAttempts = 0;
+            $modelLimit = 1;
+        }
         $models = array_values(array_unique(array_filter($chat ? [AiProvider::model(true)] : [AiProvider::model(), AiProvider::name() === 'gemini' ? config('services.gemini.fallback_model') : null])));
-        $remaining = max(1, min(3, (int) config('services.gemini.max_calls_per_operation', 3)));
+        $remaining = $singleCall ? 1 : max(1, min(3, (int) config('services.gemini.max_calls_per_operation', 3)));
         $last = null;
         foreach (array_slice($models, 0, max(1, min(2, $modelLimit))) as $model) {
             try {
@@ -113,23 +118,25 @@ class GeminiClient
                     $payload['generationConfig']['responseMimeType'] = 'application/json';
                 }
                 if ($json && $schema) {
-                    $payload['generationConfig']['responseJsonSchema'] = $schema;
+                    if (in_array($operation, ['room_analysis', 'room_preview_verification'], true)) {
+                        // One JSON-mode call avoids a rejected complex schema followed by another paid call.
+                        $payload['contents'][0]['parts'][] = ['text' => 'Return JSON only matching this schema. Coordinates must follow the visible photo; omit uncertain door fit corners. '.json_encode($schema)];
+                    } else {
+                        $payload['generationConfig']['responseJsonSchema'] = $schema;
+                    }
                 }
                 if ($systemInstruction !== null) {
                     $payload['systemInstruction'] = ['parts' => [['text' => $systemInstruction]]];
                 }
                 $response = $this->send($model, $payload, $operation, $timeout, false, $remaining, $retryAttempts);
                 $error = strtolower((string) data_get($response->json(), 'error.message', ''));
-                if ($response->status() === 400 && $json && $schema && (str_contains($error, 'schema') || str_contains($error, 'structured'))) {
+                if (! $singleCall && $response->status() === 400 && $json && $schema && (str_contains($error, 'schema') || str_contains($error, 'structured'))) {
                     unset($payload['generationConfig']['responseJsonSchema']);
                     $payload['contents'][0]['parts'][] = ['text' => 'Return JSON only matching this schema: '.json_encode($schema)];
                     $response = $this->send($model, $payload, $operation, $timeout, false, $remaining, 0);
                 }
                 $response->throw();
-                if (AiProvider::name() === 'groq' && data_get($response->json(), 'choices.0.finish_reason') !== 'stop') {
-                    throw new \RuntimeException('Incomplete Groq response');
-                }
-                $text = trim((string) data_get($response->json(), AiProvider::name() === 'groq' ? 'choices.0.message.content' : 'candidates.0.content.parts.0.text', ''));
+                $text = trim((string) data_get($response->json(), 'candidates.0.content.parts.0.text', ''));
                 if ($text === '') {
                     throw new \RuntimeException('Empty AI response');
                 }
@@ -179,10 +186,8 @@ class GeminiClient
             throw new \RuntimeException('Model is not approved by the spending policy');
         }
         $this->validatePayload($payload);
-        $groq = AiProvider::name() === 'groq';
-        $wire = $groq ? GroqPayload::fromParts($model, $payload) : $payload;
-        $headers = $groq ? ['Authorization' => 'Bearer '.AiProvider::key()] : ['x-goog-api-key' => AiProvider::key()];
-        $endpoint = $groq ? 'https://api.groq.com/openai/v1/chat/completions' : "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent";
+        $headers = ['x-goog-api-key' => AiProvider::key()];
+        $endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent";
         $tries = $image ? 1 : ($retryAttempts > 0 ? 2 : 1);
         for ($attempt = 0; $attempt < $tries; $attempt++) {
             if ($remaining-- <= 0) {
@@ -201,9 +206,10 @@ class GeminiClient
                             app(PrivacyAudit::class)->record('room_photo_sent_to_gemini', 'room_image', $transfer['room_id'], ['purpose' => $transfer['purpose']], $transfer['user_id']);
                         }
                     })
-                    ->post($endpoint, $wire);
-                $usage = $groq ? ['promptTokenCount' => data_get($response->json(), 'usage.prompt_tokens'), 'candidatesTokenCount' => data_get($response->json(), 'usage.completion_tokens'), 'thoughtsTokenCount' => data_get($response->json(), 'usage.completion_tokens_details.reasoning_tokens')] : (array) data_get($response->json(), 'usageMetadata', []);
-                $this->telemetry->record($image ? 'image' : 'text', $operation, $response->successful() ? 'success' : 'failure', $model, $response->status(), (int) ((hrtime(true) - $started) / 1_000_000), usage: $usage);
+                    ->post($endpoint, $payload);
+                $usage = (array) data_get($response->json(), 'usageMetadata', []);
+                $reason = $this->safeProviderReason($response);
+                $this->telemetry->record($image ? 'image' : 'text', $operation, $response->successful() ? 'success' : 'failure', $model, $response->status(), (int) ((hrtime(true) - $started) / 1_000_000), failureCode: $reason, usage: $usage);
                 if (in_array($response->status(), [401, 403, 429], true)) {
                     app(AiUsageBudget::class)->tripCircuit($response->status() === 429 ? max(60, (int) $response->header('Retry-After')) : 300, $response->status() === 429 ? 'quota' : 'credentials');
                     $response->throw();
@@ -257,8 +263,21 @@ class GeminiClient
         $context = ['exception' => $exception::class];
         if (property_exists($exception, 'response') && $exception->response) {
             $context['status'] = $exception->response->status();
+            $context['provider_reason'] = $this->safeProviderReason($exception->response);
         }
 
         return $context;
+    }
+
+    private function safeProviderReason(Response $response): ?string
+    {
+        if ($response->successful()) return null;
+        $values = [data_get($response->json(), 'error.status')];
+        $details = data_get($response->json(), 'error.details', []);
+        foreach (is_array($details) ? $details : [] as $detail) {
+            if (is_array($detail)) $values[] = $detail['reason'] ?? null;
+        }
+        $values = array_filter($values, fn ($value) => is_string($value) && preg_match('/^[A-Z][A-Z0-9_]{0,60}$/D', $value));
+        return $values ? substr(implode(':', array_unique($values)), 0, 100) : 'http_'.$response->status();
     }
 }

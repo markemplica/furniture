@@ -1,4 +1,106 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Keep the native field for form submission and a no-JavaScript fallback.
+    const scrollableFields = document.querySelectorAll('#catalog-filter-form select[name="category"], #catalog-filter-form select[name="wood_type"], #catalog-filter-form select[name="varnish_finish"]');
+    for (const categoryField of scrollableFields) {
+        const pickerId = categoryField.id;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'category-picker';
+        categoryField.before(wrapper);
+        wrapper.append(categoryField);
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'form-select category-picker-trigger';
+        trigger.id = `${pickerId}-picker-trigger`;
+        trigger.setAttribute('role', 'combobox');
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-expanded', 'false');
+        trigger.setAttribute('aria-controls', `${pickerId}-picker-options`);
+        const label = document.querySelector(`label[for="${pickerId}"]`);
+        if (label) {
+            label.id = `${pickerId}-picker-label`;
+            label.htmlFor = trigger.id;
+            trigger.setAttribute('aria-labelledby', label.id);
+        }
+        const list = document.createElement('div');
+        list.id = `${pickerId}-picker-options`;
+        list.className = 'category-picker-options';
+        list.setAttribute('role', 'listbox');
+        list.setAttribute('aria-label', label?.textContent || pickerId);
+        list.hidden = true;
+        // Keep focus on the combobox until the option's click selects its value.
+        list.addEventListener('mousedown', (event) => event.preventDefault());
+        const options = [...categoryField.options].map((option, index) => {
+            const item = document.createElement('div');
+            item.id = `${pickerId}-picker-option-${index}`;
+            item.className = 'category-picker-option';
+            item.setAttribute('role', 'option');
+            item.textContent = option.text;
+            item.addEventListener('click', () => choose(index));
+            list.append(item);
+            return item;
+        });
+        let active = categoryField.selectedIndex;
+        let typed = '';
+        let typedAt = 0;
+        const highlight = (index) => {
+            active = Math.max(0, Math.min(options.length - 1, index));
+            options.forEach((item, i) => item.classList.toggle('is-active', i === active));
+            trigger.setAttribute('aria-activedescendant', options[active].id);
+            if (!list.hidden) options[active].scrollIntoView({ block: 'nearest' });
+        };
+        const close = () => {
+            list.hidden = true;
+            trigger.setAttribute('aria-expanded', 'false');
+            trigger.removeAttribute('aria-activedescendant');
+        };
+        const sync = () => {
+            trigger.textContent = categoryField.selectedOptions[0]?.text || 'All';
+            options.forEach((item, index) => item.setAttribute('aria-selected', String(index === categoryField.selectedIndex)));
+        };
+        const open = () => {
+            list.hidden = false;
+            trigger.setAttribute('aria-expanded', 'true');
+            highlight(categoryField.selectedIndex);
+        };
+        const choose = (index) => {
+            categoryField.selectedIndex = index;
+            categoryField.dispatchEvent(new Event('change', { bubbles: true }));
+            close();
+            trigger.focus({ preventScroll: true });
+        };
+        trigger.addEventListener('click', () => list.hidden ? open() : close());
+        trigger.addEventListener('keydown', (event) => {
+            if (event.key === 'Tab') { close(); return; }
+            if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+            if (['Enter', ' '].includes(event.key)) {
+                event.preventDefault();
+                list.hidden ? open() : choose(active);
+                return;
+            }
+            if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                event.preventDefault();
+                if (list.hidden) open();
+                highlight(event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+                    : (active + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length);
+                return;
+            }
+            if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+                event.preventDefault();
+                typed = Date.now() - typedAt > 800 ? event.key : typed + event.key;
+                typedAt = Date.now();
+                if (list.hidden) open();
+                const index = options.findIndex((item) => item.textContent.toLowerCase().startsWith(typed.toLowerCase()));
+                if (index >= 0) highlight(index);
+            }
+        });
+        document.addEventListener('click', (event) => { if (!wrapper.contains(event.target)) close(); });
+        wrapper.addEventListener('focusout', (event) => { if (!wrapper.contains(event.relatedTarget)) close(); });
+        categoryField.addEventListener('change', sync);
+        categoryField.form?.addEventListener('reset', () => setTimeout(() => { sync(); close(); }, 0));
+        wrapper.append(trigger, list);
+        categoryField.hidden = true;
+        sync();
+    }
     const reservationPage = document.querySelector('[data-admin-reservations-page]');
     if (reservationPage) {
         const feedback = document.querySelector('[data-admin-pagination-error]');
@@ -336,6 +438,50 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const roomPhotoInput = document.querySelector('[data-room-photo-input]');
     if (roomPhotoInput) {
+        const dropzone = document.querySelector('[data-room-dropzone]');
+        const fileName = document.querySelector('[data-room-file-name]');
+        const inputPreview = document.querySelector('[data-room-input-preview]');
+        const inputPlaceholder = document.querySelector('[data-room-input-placeholder]');
+        let inputPreviewUrl;
+        const clearInputPreview = () => {
+            if (inputPreviewUrl) URL.revokeObjectURL(inputPreviewUrl);
+            inputPreviewUrl = null;
+            if (inputPreview) { inputPreview.hidden = true; inputPreview.removeAttribute('src'); }
+            if (inputPlaceholder) inputPlaceholder.hidden = false;
+        };
+        inputPreview?.addEventListener('error', clearInputPreview);
+        window.addEventListener('pagehide', event => { if (!event.persisted) clearInputPreview(); });
+        roomPhotoInput.addEventListener('change', () => {
+            const file = roomPhotoInput.files?.[0];
+            if (fileName) fileName.textContent = file ? file.name : '';
+            clearInputPreview();
+            if (inputPreview && file && ['image/jpeg', 'image/png', 'image/webp'].includes(file.type) && file.size <= 8 * 1024 * 1024) {
+                inputPreviewUrl = URL.createObjectURL(file);
+                inputPreview.src = inputPreviewUrl;
+                inputPreview.hidden = false;
+                if (inputPlaceholder) inputPlaceholder.hidden = true;
+            }
+        });
+        if (dropzone) {
+            ['dragenter', 'dragover'].forEach(eventName => dropzone.addEventListener(eventName, event => {
+                event.preventDefault();
+                if (!roomPhotoInput.matches(':disabled')) dropzone.classList.add('is-dragging');
+            }));
+            dropzone.addEventListener('dragleave', event => {
+                if (!dropzone.contains(event.relatedTarget)) dropzone.classList.remove('is-dragging');
+            });
+            dropzone.addEventListener('drop', event => {
+                event.preventDefault();
+                dropzone.classList.remove('is-dragging');
+                if (roomPhotoInput.matches(':disabled')) return;
+                const file = event.dataTransfer?.files?.[0];
+                if (!file) return;
+                const transfer = new DataTransfer();
+                transfer.items.add(file);
+                roomPhotoInput.files = transfer.files;
+                roomPhotoInput.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+        }
         const uploadForm = roomPhotoInput.closest('form');
         const qualityMessage = uploadForm?.querySelector('[data-room-photo-quality]');
         const uploadButton = uploadForm?.querySelector('button[type="submit"]');
@@ -346,7 +492,7 @@ document.addEventListener('DOMContentLoaded', () => {
             qualityMessage.replaceChildren(document.createTextNode(message + ' '));
             const retry = document.createElement('button');
             retry.type = 'button'; retry.className = 'btn btn-sm btn-outline-secondary ms-2'; retry.textContent = 'Retake';
-            retry.addEventListener('click', () => { roomPhotoInput.value = ''; photoAccepted = false; qualityRejected = false; qualityMessage.textContent = ''; roomPhotoInput.click(); });
+            retry.addEventListener('click', () => { roomPhotoInput.value = ''; clearInputPreview(); if (fileName) fileName.textContent = ''; photoAccepted = false; qualityRejected = false; qualityMessage.textContent = ''; roomPhotoInput.click(); });
             qualityMessage.append(retry);
             qualityRejected = true;
         };
@@ -354,6 +500,7 @@ document.addEventListener('DOMContentLoaded', () => {
             photoAccepted = false; qualityRejected = false;
             const file = roomPhotoInput.files?.[0];
             if (!file) return;
+            if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { showRetake('Choose a JPG, PNG, or WebP image.'); return; }
             if (file.size > 8 * 1024 * 1024) { showRetake('This photo is over 8 MB. Choose a smaller image.'); return; }
             try {
                 const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
@@ -420,7 +567,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         choice.querySelector('[data-cancel-upload]').addEventListener('click', () => choice.close());
         choice.addEventListener('close', () => uploadButton?.focus());
-        uploadForm?.addEventListener('submit', (event) => {
+        let uploadInProgress = false;
+        uploadForm?.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (uploadInProgress) return;
             if (!photoAccepted || qualityRejected) { event.preventDefault(); if (!roomPhotoInput.files?.length) roomPhotoInput.click(); return; }
             if (consent && !consent.checked && !continueLocally) {
                 event.preventDefault();
@@ -428,6 +578,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             if (uploadButton) { uploadButton.disabled = true; uploadButton.textContent = consent?.checked ? 'Uploading · Analyzing room…' : 'Uploading · Preparing local preview…'; }
+            uploadInProgress = true;
+            try {
+                const response = await fetch(uploadForm.action, {
+                    method: 'POST', body: new FormData(uploadForm),
+                    headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(Object.values(payload.errors || {}).flat()[0] || payload.message || 'Could not upload this photo. Please try again.');
+                document.dispatchEvent(new CustomEvent('room-photo-uploaded', { detail: payload }));
+                photoAccepted = false;
+                if (qualityMessage) qualityMessage.textContent = '';
+            } catch (error) {
+                if (qualityMessage) qualityMessage.textContent = error.message || 'Could not upload this photo. Please try again.';
+            } finally {
+                uploadInProgress = false;
+                if (uploadButton) { uploadButton.disabled = false; uploadButton.textContent = 'Upload room photo'; }
+            }
         });
     }
     const preferencesForm = document.querySelector('[data-preferences-form]');
@@ -602,7 +769,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const clearFilters = () => {
             for (const name of ['category', 'style', 'wood_type', 'varnish_finish', 'min_price', 'max_price']) {
                 const field = form.elements.namedItem(name);
-                if (field) field.value = '';
+                if (field) {
+                    field.value = '';
+                    field.dispatchEvent(new Event('change', { bubbles: true }));
+                }
             }
         };
         const cancelSearch = () => {
@@ -685,7 +855,7 @@ document.addEventListener('DOMContentLoaded', () => {
         deleteDialog.returnValue = 'cancel';
         deleteDialog.showModal();
     });
-    document.querySelectorAll('[data-delete-room]').forEach((form) => {
+    const bindRoomDeletion = (form) => {
         const status = document.createElement('p');
         status.className = 'small mt-2 mb-0';
         status.setAttribute('role', 'status');
@@ -709,6 +879,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 card.remove();
                 if (wasSelected) {
                     roomPicker.value = '';
+                    if (!roomPhotoInput?.files?.length) roomPhotoInput?.dispatchEvent(new Event('change', { bubbles: true }));
+                    const hero = document.querySelector('[data-planner-hero]');
+                    if (hero) {
+                        hero.src = hero.dataset.examplePhoto;
+                        hero.alt = 'Example room for inspiration';
+                        const caption = document.querySelector('[data-planner-photo-caption]');
+                        if (caption) caption.textContent = 'Example room · Your photo will appear here';
+                    }
                     if (generateRecommendations) generateRecommendations.disabled = false;
                     if (roomStepState) roomStepState.hidden = true;
                     if (selectedRoomLabel) selectedRoomLabel.textContent = 'No room selected. Recommendations will use your saved preferences.';
@@ -728,18 +906,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 button.textContent = 'Delete photo';
             }
         });
-    });
+    };
+    document.querySelectorAll('[data-delete-room]').forEach(bindRoomDeletion);
     const roomPicker = document.querySelector('#room_image_id');
     const roomSelectionStatus = document.querySelector('[data-room-selection-status]');
     const roomStepState = document.querySelector('[data-room-step-state]');
     const selectedRoomLabel = document.querySelector('[data-selected-room-label]');
     const generateRecommendations = document.querySelector('[data-generate-recommendations]');
+    const roomLibrary = document.querySelector('[data-room-library]');
+    const confirmRoom = document.querySelector('[data-confirm-room-library]');
+    let pendingRoomId = '';
+    const paintRoomChoice = (id) => {
+        roomOptions.forEach(option => {
+            const selected = option.dataset.roomId === id;
+            option.classList.toggle('is-selected', selected);
+            option.setAttribute('aria-pressed', String(selected));
+            const badge = option.querySelector('[data-room-selected-badge]');
+            if (badge) badge.hidden = !selected;
+        });
+        if (confirmRoom) confirmRoom.disabled = !roomOptions.some(option => option.dataset.roomId === id);
+    };
+    document.querySelector('[data-open-room-library]')?.addEventListener('click', () => {
+        pendingRoomId = roomPicker?.value || '';
+        paintRoomChoice(pendingRoomId);
+        if (roomSelectionStatus) roomSelectionStatus.textContent = 'Choose a room photo, then press OK to use it.';
+        roomLibrary.showModal();
+    });
+    document.querySelector('[data-cancel-room-library]')?.addEventListener('click', () => roomLibrary.close());
+    roomLibrary?.addEventListener('close', () => paintRoomChoice(roomPicker?.value || ''));
     document.querySelector('[data-skip-room]')?.addEventListener('click', () => {
         roomPicker.value = '';
         document.querySelector('#recommendation-form').requestSubmit();
     });
 
-    if (roomOptions.length && roomPicker) {
+    if (roomPicker) {
         const selectRoom = (selectedOption, announce = true) => {
             roomOptions.forEach((option) => {
                 const selected = option === selectedOption;
@@ -750,6 +950,24 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             roomPicker.value = selectedOption.dataset.roomId;
+            const preview = document.querySelector('[data-room-input-preview]');
+            if (preview && selectedOption.dataset.photoUrl) {
+                if (roomPhotoInput?.files?.length) {
+                    roomPhotoInput.value = '';
+                    roomPhotoInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                preview.src = selectedOption.dataset.photoUrl;
+                preview.hidden = false;
+                const placeholder = document.querySelector('[data-room-input-placeholder]');
+                if (placeholder) placeholder.hidden = true;
+            }
+            const hero = document.querySelector('[data-planner-hero]');
+            if (hero && selectedOption.dataset.photoUrl) {
+                hero.src = selectedOption.dataset.photoUrl;
+                hero.alt = 'Selected room photo';
+                const caption = document.querySelector('[data-planner-photo-caption]');
+                if (caption) caption.textContent = 'Selected room photo';
+            }
             const roomReady = selectedOption.dataset.roomReady === 'true';
             if (roomStepState) roomStepState.hidden = false;
             if (generateRecommendations) generateRecommendations.disabled = !roomReady;
@@ -763,17 +981,46 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        roomOptions.forEach((option) => {
+        const chooseRoom = option => {
+            if (roomLibrary?.open) {
+                pendingRoomId = option.dataset.roomId;
+                paintRoomChoice(pendingRoomId);
+            } else selectRoom(option);
+        };
+        confirmRoom?.addEventListener('click', () => {
+            const option = roomOptions.find(item => item.dataset.roomId === pendingRoomId);
+            if (!option) { paintRoomChoice(''); return; }
+            selectRoom(option);
+            roomLibrary.close();
+        });
+
+        const bindRoomChoice = (option) => {
             option.addEventListener('click', (event) => {
                 if (event.target.closest('a, button, form')) return;
-                selectRoom(option);
+                chooseRoom(option);
             });
             option.addEventListener('keydown', (event) => {
                 if (event.target.closest('a, button, form')) return;
                 if (!['Enter', ' '].includes(event.key)) return;
                 event.preventDefault();
-                selectRoom(option);
+                chooseRoom(option);
             });
+        };
+        roomOptions.forEach(bindRoomChoice);
+
+        document.addEventListener('room-photo-uploaded', event => {
+            const template = document.createElement('template');
+            template.innerHTML = event.detail.html;
+            const option = template.content.querySelector('[data-room-option]');
+            const list = document.querySelector('.planner-room-list');
+            if (!option || !list) return;
+            list.querySelector('.empty-state')?.remove();
+            list.prepend(option);
+            roomOptions.unshift(option);
+            bindRoomChoice(option);
+            option.querySelectorAll('[data-delete-room]').forEach(bindRoomDeletion);
+            selectRoom(option, false);
+            watchRoomAnalysis([option]);
         });
 
         roomPicker.addEventListener('change', () => {
@@ -805,8 +1052,8 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         window.setTimeout(tick, 3000);
     };
-    const analysisWatches = [...document.querySelectorAll('[data-room-analysis-watch]')];
     const activeAnalysisStatuses = ['queued', 'processing', 'retrying'];
+    const watchRoomAnalysis = (analysisWatches) => {
     if (analysisWatches.some((element) => activeAnalysisStatuses.includes(element.dataset.roomAnalysisCurrent || (element.dataset.roomReady === 'true' ? 'completed' : 'queued')))) {
         const labels = { queued: 'Room analysis queued', processing: 'Analyzing room image', retrying: 'AI temporarily unavailable · retrying', completed: 'AI analyzed', fallback: 'Local guidance', failed: 'Needs retry' };
         const poll = async () => {
@@ -857,6 +1104,8 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         startBoundedPoll(poll, () => analysisWatches.some(element => !element.dataset.pollingStopped && activeAnalysisStatuses.includes(element.dataset.roomAnalysisCurrent || (element.dataset.roomReady === 'true' ? 'completed' : 'queued'))));
     }
+    };
+    watchRoomAnalysis([...document.querySelectorAll('[data-room-analysis-watch]')]);
     const previewWatches = [...document.querySelectorAll('[data-preview-watch]')];
     const activePreviewStatuses = ['queued', 'processing', 'retrying'];
     if (previewWatches.some((element) => activePreviewStatuses.includes(element.dataset.previewStatus))) {

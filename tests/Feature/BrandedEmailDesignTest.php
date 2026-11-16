@@ -35,7 +35,7 @@ class BrandedEmailDesignTest extends TestCase
             new ReservationVisitReminderNotification($reservation),
             new AiUsageAlertNotification('Daily allowance is nearly used.'),
         ];
-        foreach (['pending', 'ready', 'completed', 'cancelled', 'declined', 'no_show'] as $status) {
+        foreach (['ready', 'completed', 'cancelled', 'declined', 'no_show'] as $status) {
             $notifications[] = new ReservationStatusNotification($reservation, $status);
         }
 

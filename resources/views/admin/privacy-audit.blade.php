@@ -3,7 +3,7 @@
 @section('body_class', 'privacy-audit-page')
 @section('content')
 @php
-    $actions = ['room_photo_sent_to_groq' => 'Groq processing requested', 'room_photo_groq_consent_granted' => 'Groq consent granted', 'room_photo_groq_consent_revoked' => 'Groq consent withdrawn', 'room_photo_sent_to_gemini' => 'Gemini processing requested', 'room_photo_gemini_consent_granted' => 'AI consent granted', 'room_photo_gemini_consent_revoked' => 'AI consent withdrawn', 'room_photo_deleted' => 'Room photo deleted', 'room_photo_deleted_with_account' => 'Photo removed with account', 'room_photo_retention_expired' => 'Photo retention expired', 'customer_account_deleted' => 'Customer account deleted'];
+    $actions = ['room_photo_sent_to_gemini' => 'Gemini processing requested', 'room_photo_gemini_consent_granted' => 'AI consent granted', 'room_photo_gemini_consent_revoked' => 'AI consent withdrawn', 'room_photo_deleted' => 'Room photo deleted', 'room_photo_deleted_with_account' => 'Photo removed with account', 'room_photo_retention_expired' => 'Photo retention expired', 'customer_account_deleted' => 'Customer account deleted'];
     $purposes = ['room_analysis' => 'Analyze the room photo', 'room_preview_v2_analysis' => 'Analyze the room for a preview', 'room_preview_v2_generation' => 'Generate a furnished room preview', 'room_preview_v2_verification' => 'Check the generated room preview', 'furnished_preview' => 'Generate a furnished room preview'];
     $timezone = config('app.timezone', 'UTC');
 @endphp

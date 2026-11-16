@@ -48,7 +48,7 @@ class GeminiRoomVisionService
 
     public function analyzeRoom(string $storagePath, ?float $width, ?float $depth, ?string $furnitureType = null, bool $throwOnFailure = false): array
     {
-        return $this->provider->withRequestLimit(min((int) config('services.gemini.max_calls_per_operation', 3), (int) config('roompreview.max_provider_calls', 8)), fn () => $this->performRoomAnalysis($storagePath, $width, $depth, $furnitureType, $throwOnFailure));
+        return $this->provider->withRequestLimit(min(1, (int) config('services.gemini.max_calls_per_operation', 3), (int) config('roompreview.max_provider_calls', 8)), fn () => $this->performRoomAnalysis($storagePath, $width, $depth, $furnitureType, $throwOnFailure));
     }
 
     private function performRoomAnalysis(string $storagePath, ?float $width, ?float $depth, ?string $furnitureType, bool $throwOnFailure): array
@@ -116,8 +116,8 @@ class GeminiRoomVisionService
                 ['inline_data' => ['mime_type' => $analysisMime, 'data' => base64_encode($analysisBytes)]],
             ];
             $decoded = null;
-            for ($attempt = 0; $attempt < 2; $attempt++) {
-                $response = $this->provider->generateText($parts, true, $schema, 'room_analysis', 25, 0, 2);
+            for ($attempt = 0; $attempt < 1; $attempt++) {
+                $response = $this->provider->generateText($parts, true, $schema, 'room_analysis', 25, 0, 1);
                 $candidate = json_decode($response, true);
                 $geometry = $this->sanitizeVisionGeometry($candidate['vision_geometry'] ?? null);
                 if (is_array($candidate) && is_array($geometry)) {

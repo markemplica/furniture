@@ -4,6 +4,88 @@
  */
 (() => {
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const lightingProfile = (samples) => {
+        const usable=samples.filter(s=>Math.max(...s.slice(0,3))-Math.min(...s.slice(0,3))<=100
+            && (s[0]+s[1]+s[2])/3>25 && (s[0]+s[1]+s[2])/3<240);
+        if(usable.length<8) return [1,0,0];
+        const luma=s=>.299*s[0]+.587*s[1]+.114*s[2];
+        const mean=values=>values.reduce((a,b)=>a+b,0)/Math.max(1,values.length);
+        const left=usable.filter(s=>s[3]<.5),right=usable.filter(s=>s[3]>=.5);
+        return [.9+.16*mean(usable.map(luma))/255,clamp(mean(usable.map(s=>(s[0]-s[2])/255)),-.12,.12)*.25,
+            left.length&&right.length ? clamp((mean(right.map(luma))-mean(left.map(luma)))/255*.2,-.07,.07):0];
+    };
+    const lightingColor = (rgb, profile, x) => {
+        const [gain,warm,direction]=profile,weight=1-((rgb[0]+rgb[1]+rgb[2])/765)**4;
+        return rgb.map((channel,index)=>Math.round(clamp(channel*(1+(gain-1+direction*(2*x-1)+[warm,0,-warm][index])*weight),0,255)));
+    };
+    // Same bottom-centre projection and frame limits as RoomPreviewRasterService::furnitureQuad.
+    const furnitureQuad = (placement, width, height) => {
+        const ratio = Math.min(1, .9 / placement.width, .92 / placement.height);
+        let w = placement.width * width * ratio, h = placement.height * height * ratio;
+        const angle = clamp(Number(placement.rotationDeg) || 0, -18, 18) * Math.PI / 180;
+        // A bounded projective turn changes the near/far side scale, rather than leaning the cutout.
+        const turn = Math.sin(clamp(Number(placement.perspectiveDeg) || 0, -24, 24) * Math.PI / 180) * .18;
+        const anchorX = clamp(placement.x, .05, .95) * width;
+        const anchorY = clamp(placement.y, .05, .98) * height;
+        if (Math.abs(angle) < 1e-9 && Math.abs(turn) < 1e-9) {
+            const aspect = h / w;
+            w = Math.max(1, Math.floor(w)); h = Math.max(1, Math.round(w * aspect));
+            const left = Math.round(clamp(anchorX - w / 2, 0, width - w));
+            const top = Math.round(clamp(anchorY - h, 0, height - h));
+            return [[left,top],[left+w,top],[left+w,top+h],[left,top+h]];
+        }
+        const offsets = [[-w/2,-h],[w/2,-h],[w/2,0],[-w/2,0]].map(([x,y]) => {
+            const depth = 1 + turn * (2*x/w);
+            x /= depth; y /= depth;
+            return [x*Math.cos(angle)-y*Math.sin(angle), x*Math.sin(angle)+y*Math.cos(angle)];
+        });
+        const xs = offsets.map(([x])=>x), ys = offsets.map(([,y])=>y);
+        const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+        const fit=Math.min(1,width*.9/Math.max(1,maxX-minX),height*.92/Math.max(1,maxY-minY));
+        const x=clamp(anchorX,-minX*fit,width-maxX*fit), y=clamp(anchorY,-minY*fit,height-maxY*fit);
+        return offsets.map(([dx,dy])=>[x+dx*fit,y+dy*fit]);
+    };
+    const quadTransform = (quad) => {
+        const [[x0,y0],[x1,y1],[x2,y2],[x3,y3]] = quad;
+        const dx1=x1-x2, dx2=x3-x2, dx3=x0-x1+x2-x3;
+        const dy1=y1-y2, dy2=y3-y2, dy3=y0-y1+y2-y3;
+        const den=dx1*dy2-dx2*dy1;
+        const g=Math.abs(den)<1e-9 ? 0 : (dx3*dy2-dx2*dy3)/den;
+        const h=Math.abs(den)<1e-9 ? 0 : (dx1*dy3-dx3*dy1)/den;
+        return [x1-x0+g*x1,x3-x0+h*x3,x0,y1-y0+g*y1,y3-y0+h*y3,y0,g,h];
+    };
+    const projectQuad = (quad, u, v) => {
+        const [a,b,c,d,e,f,g,h]=quadTransform(quad), den=g*u+h*v+1;
+        return [(a*u+b*v+c)/den,(d*u+e*v+f)/den];
+    };
+    // Opaque lower-contour plateaus identify likely feet without treating faint cutout fringes as supports.
+    const alphaContactRegions = (pixels, width, height) => {
+        const profile = Array(width).fill(null);
+        for (let x = 0; x < width; x++) {
+            for (let y = height - 1; y >= Math.floor(height * .35) + 2; y--) {
+                if ([0, 1, 2].every((offset) => pixels[((y - offset) * width + x) * 4 + 3] >= 160)) {
+                    profile[x] = y; break;
+                }
+            }
+        }
+        const groups = [];
+        for (let x = 0; x < width;) {
+            if (profile[x] === null) { x++; continue; }
+            const start = x; let low = profile[x], high = profile[x];
+            while (x + 1 < width && profile[x + 1] !== null
+                && Math.max(high, profile[x + 1]) - Math.min(low, profile[x + 1]) <= 2) {
+                x++; low = Math.min(low, profile[x]); high = Math.max(high, profile[x]);
+            }
+            const end = x++;
+            if (end - start < 1) continue;
+            let recessed = false;
+            for (let i = Math.max(0, start - 6); i <= Math.min(width - 1, end + 6); i++) {
+                if (profile[i] !== null && profile[i] > high + 3) { recessed = true; break; }
+            }
+            if (!recessed) groups.push({ x: (start + end + 1) / (2 * width), y: (high + 1) / height, width: (end - start + 1) / width });
+        }
+        return groups.sort((a, b) => b.y - a.y).slice(0, 24);
+    };
     const readJson = (element, fallback = {}) => {
         try { return JSON.parse(element?.textContent || JSON.stringify(fallback)); } catch (_) { return fallback; }
     };
@@ -19,7 +101,8 @@
         let minX = width, minY = height, maxX = -1, maxY = -1;
         for (let y = 0; y < height; y += 1) {
             for (let x = 0; x < width; x += 1) {
-                if (pixels[(y * width + x) * 4 + 3] <= 8) continue;
+                // GD stores 7-bit alpha: source alpha 0 and 1 both decode as transparent.
+                if (pixels[(y * width + x) * 4 + 3] < 2) continue;
                 minX = Math.min(minX, x);
                 minY = Math.min(minY, y);
                 maxX = Math.max(maxX, x);
@@ -115,6 +198,7 @@
     class RoomPreviewEngine {
         constructor(frame) {
             this.frame = frame;
+            this.scalePolicy = readJson({textContent: frame.dataset.visualScalePolicy || 'null'}, null);
             this.canvas = frame.querySelector('[data-room-preview-canvas]');
             this.context = this.canvas?.getContext('2d');
             this.room = frame.querySelector('[data-preview-room]');
@@ -215,8 +299,11 @@
                 return placement;
             }
 
-            const width = this.boundedVisualWidth(maxWidth, naturalAspect);
-            const height = width * (this.room.naturalWidth / this.room.naturalHeight) / naturalAspect;
+            const frameWidth = this.room.naturalWidth, frameHeight = this.room.naturalHeight;
+            const requestedHeight = maxWidth * frameWidth / frameHeight / naturalAspect;
+            const fit = Math.min(1, .9 / maxWidth, .92 / requestedHeight);
+            const width = this.boundedVisualWidth(maxWidth * fit, naturalAspect);
+            const height = width * frameWidth / frameHeight / naturalAspect;
             const depth = this.floorFootprintDepth(width);
             const rect = { left: x - width / 2, right: x + width / 2, top: y - height, bottom: y };
             if (rect.left < 0.02 || rect.right > 0.98 || rect.top < 0.02 || rect.bottom > 0.98) return null;
@@ -259,14 +346,12 @@
         visibleShapeOverlaps(placement, regions) {
             if (!regions.length) return false;
             const cells = this.productCollisionCells || [{left:0, top:0, right:1, bottom:1}];
-            const aspect = this.room.naturalWidth / this.room.naturalHeight;
-            const angle = (Number(placement.rotationDeg) || 0) * Math.PI / 180;
-            const shear = Math.tan((Number(placement.perspectiveDeg) || 0) * Math.PI / 180) * 0.35;
+            const width = this.room.naturalWidth, height = this.room.naturalHeight;
+            const quad = furnitureQuad(placement, width, height);
             const project = (u, v) => {
-                const dy = (v - 0.5) * placement.height;
-                const dx = (u - 0.5) * placement.width * (placement.flip === true ? -1 : 1) + shear * dy / aspect;
-                return [placement.x + dx * Math.cos(angle) - dy * Math.sin(angle) / aspect,
-                    placement.y - placement.height / 2 + dx * Math.sin(angle) * aspect + dy * Math.cos(angle)];
+                if (placement.flip === true) u = 1 - u;
+                const [x,y] = projectQuad(quad,u,v);
+                return [x/width,y/height];
             };
             return cells.some((cell) => {
                 const box = bounds([project(cell.left, cell.top), project(cell.right, cell.top), project(cell.right, cell.bottom), project(cell.left, cell.bottom)]);
@@ -454,8 +539,11 @@
                         ? 'The room photo is still being analyzed. A door will appear only if a complete doorway frame is found.'
                         : 'The room photo is still being analyzed. Furniture will appear if a clear placement area is found.';
                 } else if (this.placementMode === 'door') {
-                    this.setStatus('No confirmed doorway available', 'low');
-                    if (this.guidance) this.guidance.textContent = 'A complete doorway placement was not confirmed, so this door has not been placed. Use a photo showing the full frame from top to floor, then re-analyze when AI is available.';
+                    const unavailable = this.analysis.gemini_used === false;
+                    this.setStatus(unavailable ? 'Doorway analysis unavailable' : 'No confirmed doorway available', 'low');
+                    if (this.guidance) this.guidance.textContent = unavailable
+                        ? 'The room analysis did not return doorway corners. This does not mean the doorway frame is missing from your photo. Re-analyze this saved photo when AI analysis is available.'
+                        : 'A complete doorway placement was not confirmed, so this door has not been placed. Use a photo showing the full frame from top to floor, then re-analyze when AI is available.';
                 } else {
                     this.setStatus('No validated placement available', 'low');
                     if (this.guidance) this.guidance.textContent = 'No clear area passed the placement checks. Try a wider photo showing the floor and nearby doors, or re-analyze the room. The product has not been placed over a blocked area.';
@@ -524,7 +612,7 @@
         visibleImageBounds(image) {
             const fullImage = { x: 0, y: 0, width: image.naturalWidth || image.width, height: image.naturalHeight || image.height };
             try {
-                const ratio = Math.min(1, 256 / Math.max(fullImage.width, fullImage.height));
+                const ratio = 1; // Match the server's exact alpha crop, including faint source edges.
                 const width = Math.max(1, Math.round(fullImage.width * ratio));
                 const height = Math.max(1, Math.round(fullImage.height * ratio));
                 const sample = document.createElement('canvas');
@@ -574,6 +662,18 @@
         }
 
         boundedVisualWidth(width, naturalAspect) {
+            if (this.placementMode === 'floor' && this.scalePolicy) {
+                const rules = this.scalePolicy, type = this.itemType || '';
+                const family = /bed|bunk|double.deck/i.test(type) ? 'bed'
+                    : /sala|sofa|couch|sectional|living.room/i.test(type) ? 'living'
+                    : /dining/i.test(type) ? 'dining'
+                    : /cabinet|wardrobe|dresser|shelf|storage/i.test(type) ? 'storage'
+                    : /chair|stool|bench|seating/i.test(type) ? 'seating'
+                    : /table|desk|console/i.test(type) ? 'table' : 'default';
+                const floor = this.floorDetected !== false;
+                return Math.min(width, rules.widths[family], floor ? 1 : rules.width_without_floor,
+                    (floor ? rules.height : rules.height_without_floor) * naturalAspect / (this.room.naturalWidth / this.room.naturalHeight));
+            }
             if (this.placementMode !== 'floor' || this.floorDetected !== false) return width;
             // No detected floor means the type-based size is only a fallback.
             // Leave room visible and limit height using the actual cutout proportions.
@@ -802,6 +902,65 @@
             return { width, height };
         }
 
+        contactRegions() {
+            const sample = document.createElement('canvas');
+            sample.width = sample.height = 160;
+            const context = sample.getContext('2d', { willReadFrequently: true });
+            const crop = this.productImageBounds;
+            if (!context || !crop) return [];
+            context.drawImage(this.productRenderImage || this.item, crop.x, crop.y, crop.width, crop.height, 0, 0, 160, 160);
+            return alphaContactRegions(context.getImageData(0, 0, 160, 160).data, 160, 160);
+        }
+
+        drawContactShadows(placement, itemWidth, itemHeight, width, height) {
+            if (placement.mode !== 'floor') return;
+            const ctx = this.context;
+            const quad = furnitureQuad(placement, width, height);
+            itemWidth = Math.hypot(quad[1][0]-quad[0][0], quad[1][1]-quad[0][1]);
+            for (const contact of this.contactRegions()) {
+                const u = placement.flip === true ? 1-contact.x : contact.x, v = contact.y;
+                const [x,y] = projectQuad(quad,u,v);
+                const radiusX = Math.max(2, Math.min(itemWidth * .08, contact.width * itemWidth * .9 + 1));
+                const radiusY = Math.max(1.2, radiusX * .24);
+                ctx.save();
+                ctx.translate(x, y + radiusY * .15);
+                ctx.scale(radiusX, radiusY);
+                const shade = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+                shade.addColorStop(0, 'rgba(25, 20, 16, .32)');
+                shade.addColorStop(.35, 'rgba(25, 20, 16, .18)');
+                shade.addColorStop(1, 'rgba(25, 20, 16, 0)');
+                ctx.fillStyle = shade;
+                ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        litProduct(flip) {
+            // Work on a copy: catalog pixels, alpha and collision masks remain intact.
+            if (!this.room?.naturalWidth || !this.productImageBounds) return this.productRenderImage || this.item;
+            const roomSample=document.createElement('canvas'); roomSample.width=8; roomSample.height=6;
+            const rc=roomSample.getContext('2d',{willReadFrequently:true});
+            const samples=[];
+            for(let y=0;y<6;y++)for(let x=0;x<8;x++) {
+                const sx=Math.min(this.room.naturalWidth-1,Math.floor((x+.5)/8*this.room.naturalWidth));
+                const sy=Math.min(this.room.naturalHeight-1,Math.floor((y+.5)/6*this.room.naturalHeight));
+                rc.drawImage(this.room,sx,sy,1,1,x,y,1,1);
+                const p=rc.getImageData(x,y,1,1).data;
+                samples.push([p[0],p[1],p[2],(x+.5)/8]);
+            }
+            const profile=lightingProfile(samples),image=this.productRenderImage || this.item;
+            const copy=document.createElement('canvas'); copy.width=image.naturalWidth || image.width; copy.height=image.naturalHeight || image.height;
+            const context=copy.getContext('2d',{willReadFrequently:true}); context.drawImage(image,0,0);
+            const pixels=context.getImageData(0,0,copy.width,copy.height),crop=this.productImageBounds;
+            for(let y=0;y<copy.height;y++)for(let x=0;x<copy.width;x++) {
+                const i=(y*copy.width+x)*4;if(!pixels.data[i+3])continue;
+                let u=clamp((x+.5-crop.x)/crop.width,0,1);if(flip)u=1-u;
+                const rgb=lightingColor([pixels.data[i],pixels.data[i+1],pixels.data[i+2]],profile,u);
+                pixels.data[i]=rgb[0];pixels.data[i+1]=rgb[1];pixels.data[i+2]=rgb[2];
+            }
+            context.putImageData(pixels,0,0);return copy;
+        }
+
         draw(placement, dims) {
             const size = this.canvasSize();
             if (!size) return;
@@ -810,72 +969,63 @@
             ctx.clearRect(0, 0, width, height);
             ctx.drawImage(this.room, 0, 0, width, height);
             if (!this.dimensionsFromCatalog()) return;
-            ctx.save();
-            const lighting = this.vision?.lighting || (typeof this.analysis.lighting === 'object' ? this.analysis.lighting : {});
-            const brightness = clamp(Number(lighting.brightness ?? 0.55), 0, 1);
-            const x = placement.x * width;
-            const y = placement.y * height;
+            const rendered = this.litProduct(placement.flip === true);
             const itemWidth = placement.width * width;
             const itemHeight = placement.height * height;
-            ctx.globalAlpha = 0.12 + brightness * 0.13;
-            ctx.fillStyle = '#171a18';
-            ctx.filter = 'blur(12px)';
-            ctx.beginPath();
-            ctx.ellipse(x, y - Math.max(2, itemHeight * 0.015), Math.max(3, itemWidth * 0.34), Math.max(2, itemHeight * 0.035), 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
+            this.drawContactShadows(placement, itemWidth, itemHeight, width, height);
             if (placement.mode === 'door' && placement.quad?.length === 4) {
-                this.drawQuad(ctx, this.productRenderImage || this.item, placement.quad.map(([qx, qy]) => [qx * width, qy * height]), this.productImageBounds);
+                this.drawQuad(ctx, rendered, placement.quad.map(([qx, qy]) => [qx * width, qy * height]), this.productImageBounds, placement.flip === true);
             } else {
                 const flip = placement.flip === true ? -1 : 1;
                 ctx.save();
-                ctx.globalAlpha = 0.94;
-                ctx.filter = `brightness(${clamp(0.92 + brightness * 0.13, 0.85, 1.08)}) saturate(${clamp(0.88 + Number(lighting.warmth || 0.45) * 0.18, 0.8, 1.1)})`;
-                ctx.shadowColor = 'rgba(20, 24, 21, .24)';
-                ctx.shadowBlur = Math.max(2, itemWidth * 0.025);
-                ctx.shadowOffsetY = Math.max(1, itemHeight * 0.012);
-                ctx.translate(x, y - itemHeight / 2);
-                ctx.rotate((Number(placement.rotationDeg) || 0) * Math.PI / 180);
-                const perspective = Math.tan((Number(placement.perspectiveDeg) || 0) * Math.PI / 180) * 0.35;
-                ctx.transform(1, 0, perspective, 1, 0, 0);
-                ctx.scale(flip, 1);
+                // Keep the source cutout's alpha without making solid furniture translucent.
+                ctx.globalAlpha = 1;
+                const quad = furnitureQuad(placement, width, height);
                 const crop = this.productImageBounds || { x: 0, y: 0, width: this.item.naturalWidth, height: this.item.naturalHeight };
-                ctx.drawImage(this.productRenderImage || this.item, crop.x, crop.y, crop.width, crop.height, -itemWidth / 2, -itemHeight / 2, itemWidth, itemHeight);
+                if (Math.abs(Number(placement.perspectiveDeg) || 0) > 1e-9) {
+                    this.drawQuad(ctx, rendered, quad, crop, flip === -1);
+                    ctx.restore();
+                    return;
+                }
+                ctx.transform(quad[1][0]-quad[0][0], quad[1][1]-quad[0][1],
+                    quad[3][0]-quad[0][0], quad[3][1]-quad[0][1], quad[0][0], quad[0][1]);
+                if (flip === -1) { ctx.translate(1, 0); ctx.scale(-1, 1); }
+                ctx.drawImage(rendered, crop.x, crop.y, crop.width, crop.height, 0, 0, 1, 1);
                 ctx.restore();
             }
         }
 
-        drawQuad(ctx, image, quad, crop = null) {
-            crop = crop || { x: 0, y: 0, width: image.naturalWidth || image.width, height: image.naturalHeight || image.height };
-            const [tl, tr, br, bl] = quad;
-            const project = (u, v) => [
-                (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + u*v*br[0] + (1-u)*v*bl[0],
-                (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + u*v*br[1] + (1-u)*v*bl[1],
-            ];
-            const triangle = (source, target) => {
-                const [[sx0,sy0],[sx1,sy1],[sx2,sy2]] = source;
-                const [[dx0,dy0],[dx1,dy1],[dx2,dy2]] = target;
-                const den = sx0*(sy1-sy2)+sx1*(sy2-sy0)+sx2*(sy0-sy1);
-                if (Math.abs(den) < 1e-6) return;
-                const a=(dx0*(sy1-sy2)+dx1*(sy2-sy0)+dx2*(sy0-sy1))/den;
-                const b=(dy0*(sy1-sy2)+dy1*(sy2-sy0)+dy2*(sy0-sy1))/den;
-                const c=(dx0*(sx2-sx1)+dx1*(sx0-sx2)+dx2*(sx1-sx0))/den;
-                const d=(dy0*(sx2-sx1)+dy1*(sx0-sx2)+dy2*(sx1-sx0))/den;
-                const e=(dx0*(sx1*sy2-sx2*sy1)+dx1*(sx2*sy0-sx0*sy2)+dx2*(sx0*sy1-sx1*sy0))/den;
-                const f=(dy0*(sx1*sy2-sx2*sy1)+dy1*(sx2*sy0-sx0*sy2)+dy2*(sx0*sy1-sx1*sy0))/den;
-                ctx.save(); ctx.beginPath(); ctx.moveTo(dx0,dy0); ctx.lineTo(dx1,dy1); ctx.lineTo(dx2,dy2); ctx.closePath(); ctx.clip();
-                ctx.transform(a,b,c,d,e,f); ctx.drawImage(image,0,0); ctx.restore();
-            };
-            const cols = 10, rows = 18;
-            for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {
-                const u0=c/cols,u1=(c+1)/cols,v0=r/rows,v1=(r+1)/rows;
-                const src=[[crop.x+u0*crop.width,crop.y+v0*crop.height],[crop.x+u1*crop.width,crop.y+v0*crop.height],[crop.x+u1*crop.width,crop.y+v1*crop.height],[crop.x+u0*crop.width,crop.y+v1*crop.height]];
-                const dst=[project(u0,v0),project(u1,v0),project(u1,v1),project(u0,v1)];
-                triangle([src[0],src[1],src[2]],[dst[0],dst[1],dst[2]]);
-                triangle([src[0],src[2],src[3]],[dst[0],dst[2],dst[3]]);
+        drawQuad(ctx, image, quad, crop = null, flip = false) {
+            crop = crop || {x:0,y:0,width:image.naturalWidth || image.width,height:image.naturalHeight || image.height};
+            const left=Math.max(0,Math.floor(Math.min(...quad.map(([x])=>x))));
+            const top=Math.max(0,Math.floor(Math.min(...quad.map(([,y])=>y))));
+            const right=Math.min(this.canvas.width,Math.ceil(Math.max(...quad.map(([x])=>x))));
+            const bottom=Math.min(this.canvas.height,Math.ceil(Math.max(...quad.map(([,y])=>y))));
+            const width=right-left,height=bottom-top;
+            if(width<=0 || height<=0) return;
+            const sample=document.createElement('canvas'); sample.width=width; sample.height=height;
+            const sampleContext=sample.getContext('2d',{willReadFrequently:true});
+            sampleContext.drawImage(image,crop.x,crop.y,crop.width,crop.height,0,0,width,height);
+            const pixels=sampleContext.getImageData(0,0,width,height).data;
+            const output=sampleContext.createImageData(width,height);
+            const [a,b,c,d,e,f,g,h]=quadTransform(quad);
+            const inv=[e-f*h,c*h-b,b*f-c*e,f*g-d,a-c*g,c*d-a*f,d*h-e*g,b*g-a*h,a*e-b*d];
+            // Inverse mapping fills every destination pixel: no transparent triangle seams.
+            for(let y=0;y<height;y++) for(let x=0;x<width;x++) {
+                const px=left+x+.5,py=top+y+.5,den=inv[6]*px+inv[7]*py+inv[8];
+                if(Math.abs(den)<1e-9) continue;
+                let u=(inv[0]*px+inv[1]*py+inv[2])/den;
+                const v=(inv[3]*px+inv[4]*py+inv[5])/den;
+                if(u<0 || u>1 || v<0 || v>1) continue;
+                if(flip) u=1-u;
+                const from=(Math.min(height-1,Math.floor(v*height))*width+Math.min(width-1,Math.floor(u*width)))*4;
+                const to=(y*width+x)*4;
+                output.data[to]=pixels[from]; output.data[to+1]=pixels[from+1];
+                output.data[to+2]=pixels[from+2]; output.data[to+3]=pixels[from+3];
             }
+            sampleContext.putImageData(output,0,0);
+            ctx.drawImage(sample,left,top);
         }
-
         async generateAiPreview(runId, retry = false) {
             const endpoint = this.frame.dataset.previewV2Url;
             const productId = Number(this.frame.dataset.productId || 0);
@@ -952,48 +1102,29 @@
             }
         }
         async verifyLoop(dims, runId = this.runId) {
-            let best = { ...this.result };
-            let bestScore = -1;
-            for (let attempt = 0; attempt < 3; attempt += 1) {
+            const original = this.result;
+            this.setProgress('Checking the visual fit', false);
+            try {
+                const preview = this.canvas.toDataURL('image/jpeg', 0.78).split(',')[1];
+                const response = await fetch(this.frame.dataset.verifyUrl, {
+                    signal: AbortSignal.timeout(35000), method: 'POST', credentials: 'same-origin',
+                    headers: {'Content-Type':'application/json','X-CSRF-TOKEN':this.frame.dataset.csrf,'Accept':'application/json'},
+                    body: JSON.stringify({preview,placement:original,product_id:this.frame.dataset.productId}),
+                });
+                if (!response.ok) throw new Error('verification unavailable');
+                const check = await response.json();
                 if (runId !== this.runId) return;
-                this.setProgress(`Checking the visual fit (${attempt + 1}/3)`, false);
-                try {
-                    const preview = this.canvas.toDataURL('image/jpeg', 0.78).split(',')[1];
-                    const response = await fetch(this.frame.dataset.verifyUrl, {
-                        signal: AbortSignal.timeout(35000), method: 'POST', credentials: 'same-origin',
-                        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': this.frame.dataset.csrf, 'Accept': 'application/json' },
-                        body: JSON.stringify({ preview, placement: this.result, product_id: this.frame.dataset.productId }),
-                    });
-                    if (!response.ok) throw new Error('verification unavailable');
-                    const check = await response.json();
-                    if (runId !== this.runId) return;
-                    if (check.valid !== true) break;
-                    const score = clamp(Number(check.realism_score || 0), 0, 1);
-                    if (score > bestScore) { best = { ...this.result }; bestScore = score; }
-                    if (check.verdict === 'good' && score >= 0.75) break;
-                    const correction = check.corrections || {};
-                    const correctedScale = clamp(this.result.scale * clamp(Number(correction.scale_factor || 1), 0.6, 1.4), 0.6, 1.3);
-                    const candidate = { ...this.result, x: clamp(this.result.x + Number(correction.dx || 0), 0.02, 0.98), y: clamp(this.result.y + Number(correction.dy || 0), 0.02, 0.98), scale: correctedScale, width: this.result.width * correctedScale / Math.max(0.001, this.result.scale), height: this.result.height * correctedScale / Math.max(0.001, this.result.scale), depth: this.result.depth * correctedScale / Math.max(0.001, this.result.scale) };
-                    if (typeof correction.flip === 'boolean') candidate.flip = correction.flip;
-                    if (candidate.mode === 'door' && candidate.quad?.length === 4) {
-                        const center = candidate.quad.reduce((sum, point) => [sum[0] + point[0] / 4, sum[1] + point[1] / 4], [0, 0]);
-                        const factor = clamp(Number(correction.scale_factor || 1), 0.6, 1.4);
-                        candidate.quad = candidate.quad.map(([qx, qy]) => [center[0] + (qx - center[0]) * factor + Number(correction.dx || 0), center[1] + (qy - center[1]) * factor + Number(correction.dy || 0)]);
-                    }
-                    if (!this.hardValid(candidate, dims)) break;
-                    this.result = candidate;
-                    this.draw(candidate, dims);
-                } catch (_) {
-                    this.warnings.push('Automatic visual checking was unavailable; the safe local fit is shown.');
-                    break;
-                }
+                this.verificationScore = check.valid === true ? clamp(Number(check.realism_score)||0,0,1) : null;
+                if (check.valid === true && check.verdict !== 'good') this.warnings.push('The visual check suggests reviewing the placement. Your local preview is retained.');
+            } catch (_) {
+                if (runId !== this.runId) return;
+                this.verificationScore = null;
+                this.warnings.push('Visual checking was unavailable; the local preview is retained.');
             }
-            this.result = best;
-            this.draw(best, dims);
-            this.verificationScore = bestScore >= 0 ? clamp(bestScore, 0, 1) : null;
-            this.report(best);
+            // One explicit check only. Corrections must not trigger another paid request.
+            this.result = original;
+            this.report(original);
         }
-
         hardValid(place, dims) {
             if (place.mode === 'door') return Boolean(place.quad?.length === 4 && place.quad.flat().every((v) => v >= 0.02 && v <= 0.98));
             return Boolean(dims.width && dims.depth && dims.height) && this.placementFitsPhoto(place);
@@ -1071,5 +1202,5 @@
         });
     });
     window.RoomPreviewEngine = RoomPreviewEngine;
-    window.RoomPreviewEngineTest = { pointInPolygon, polygonArea, bounds, rectanglesOverlap, polygonIntersectsRect, polygonInsidePolygon, weightedMedian, imageContentBounds, confidenceScore, detectedFloorPolygon };
+    window.RoomPreviewEngineTest = { pointInPolygon, polygonArea, bounds, rectanglesOverlap, polygonIntersectsRect, polygonInsidePolygon, weightedMedian, imageContentBounds, confidenceScore, detectedFloorPolygon, alphaContactRegions, furnitureQuad, projectQuad, lightingProfile, lightingColor };
 })();

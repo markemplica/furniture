@@ -1,6 +1,6 @@
 # API usage and cost controls — 5 November 2026
 
-**Current provider:** the owner requested a return to **Gemini** on 5 November 2026. Chatbot, room analysis and visual placement checks select `gemini-3.1-flash-lite`. Groq is inactive; its optional adapter remains available for an explicit future switch. The spending ledger, 15-day deadline, USD 1/day and USD 15 total beta allowance remain unchanged. Image generation stays disabled. Photo consent explicitly granted for Groq is not permission to send the photo to Google.
+**Current provider:** Gemini only. Optional alternate-provider support was removed on 16 November 2026. Existing consent from another provider is not converted to Gemini consent. The dated configuration below is historical; active settings are controlled by the deployed environment. Room analysis and visual checks now use at most one provider call each; image enhancement is disabled locally, and if enabled it is capped at one generation plus one verification.
 
 ## Current capstone configuration
 
@@ -17,7 +17,7 @@ The migration was applied after a verified backup and isolated restore: `storage
 | Recommendation chatbot | Gemini only for questions not answered locally | Local catalog/price/material/fit answers; bounded context; per-user cache; concurrent identical questions share a lock. |
 | Room upload with consent | Optional queued Gemini analysis | Explicit upload action; consent required; existing photo/hash caches; global and per-user budgets. |
 | Room re-analysis | Optional queued Gemini analysis | Explicit POST; shared AI-action limits; bounded job; no automatic page-view analysis. |
-| Visual placement checking | Optional Gemini image understanding | Explicit action; identical checks cached; concurrent checks share a lock; client loop remains limited to three checks. |
+| Visual placement checking | Optional Gemini image understanding | Explicit action; identical checks cached; concurrent checks share a lock; one client check with no automatic correction loop. |
 | Furnished image enhancement | Optional Gemini image generation and verification | Explicit action; feature separately disabled by default; one 1K image candidate, one image attempt, no image model escalation. |
 | Room/status polling | None | Read-only backend responses; bounded sequential polling with timeouts; stop on access or rate-limit failures. |
 | Verification/reset/reservation/feedback/alerts | SMTP notification queue, not Gemini | Existing finite mail attempts and notification recovery; new shared limits on guest email-trigger endpoints; alert email channel separately capped. |

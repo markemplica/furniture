@@ -82,7 +82,7 @@ class FurnitureProduct extends Model
 
     public function recommendationType(): string
     {
-        return static::recommendationTypeForCategory($this->category);
+        return static::recommendationTypeForCategory((string) $this->category);
     }
 
     public static function recommendationTypes(): Collection

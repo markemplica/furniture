@@ -1,6 +1,14 @@
 <?php
 
 return [
+    // Image-space presentation limits, not physical furniture or room measurements.
+    'visual_scale' => [
+        'height' => 0.52,
+        'height_without_floor' => 0.38,
+        'width_without_floor' => 0.40,
+        'widths' => ['bed' => 0.40, 'living' => 0.55, 'dining' => 0.50, 'storage' => 0.32,
+            'seating' => 0.25, 'table' => 0.35, 'default' => 0.40],
+    ],
     'use_v2_pipeline' => (bool) env('ROOM_PREVIEW_V2_ENABLED', false),
     'rollout_percent' => max(0, min(100, (int) env('ROOM_PREVIEW_V2_ROLLOUT_PERCENT', 0))),
     'pipeline_version' => (string) env('ROOM_PREVIEW_PIPELINE_VERSION', 'v2'),

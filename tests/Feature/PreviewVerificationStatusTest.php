@@ -48,9 +48,11 @@ class PreviewVerificationStatusTest extends TestCase
         $photos->shouldReceive('deleteGenerated')->andReturnNull();
         $gemini = $this->mock(GeminiService::class);
         $gemini->shouldReceive('providerCallCount')->andReturn(0);
-        $gemini->shouldReceive('limitProviderRequests')->once()->with(8);
+        $gemini->shouldReceive('limitProviderRequests')->once()->with(2);
         $gemini->shouldReceive('clearProviderRequestLimit')->once();
-        $gemini->shouldReceive('analyzeRoom')->once()->andReturn(['gemini_used' => true]);
+        $room->update(['analysis_status'=>'completed','analysis'=>['gemini_used'=>true,
+            'analyzed_furniture_type'=>'all catalog furniture','placement_profile_version'=>2]]);
+        $gemini->shouldNotReceive('analyzeRoom');
         $gemini->shouldReceive('isConfigured')->andReturn(true);
         if ($failure) {
             $exception = $failure === 'timeout'

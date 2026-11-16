@@ -125,7 +125,7 @@ class RoomPreviewV2Test extends TestCase
     }
 
 
-    public function test_complex_schema_rejection_retries_json_mode_without_losing_image_input(): void
+    public function test_verification_schema_rejection_stops_after_one_request_without_losing_image_input(): void
     {
         config(['services.gemini.key' => 'test-key', 'services.gemini.model' => 'test-model']);
         \Illuminate\Support\Facades\Http::fakeSequence()
@@ -134,9 +134,13 @@ class RoomPreviewV2Test extends TestCase
         $method = new \ReflectionMethod(\App\Services\GeminiService::class, 'request');
         $encoded = base64_encode(file_get_contents(base_path('tests/Fixtures/room-600.png')));
         $parts = [['text' => 'Analyze room'], ['inline_data' => ['mime_type' => 'image/png', 'data' => $encoded]]];
-        $result = $method->invoke(app(\App\Services\GeminiService::class), $parts, true, ['type' => 'object'], 'room_analysis', 10, 0, 1);
-        $this->assertSame('{"ok":true}', $result);
-        \Illuminate\Support\Facades\Http::assertSentCount(2);
+        try {
+            $method->invoke(app(\App\Services\GeminiService::class), $parts, true, ['type' => 'object'], 'room_preview_verification', 10, 99, 99);
+            $this->fail('A rejected request must stop.');
+        } catch (\Illuminate\Http\Client\RequestException $exception) {
+            $this->assertSame(400, $exception->response->status());
+        }
+        \Illuminate\Support\Facades\Http::assertSentCount(1);
         \Illuminate\Support\Facades\Http::assertSent(fn ($request) =>
             data_get($request->data(), 'contents.0.parts.1.inline_data.data') === $encoded
             && data_get($request->data(), 'generationConfig.responseMimeType') === 'application/json'

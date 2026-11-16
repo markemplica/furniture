@@ -10,6 +10,7 @@
     <p class="small text-muted">No saved preview image is available. This local 2D estimate is reconstructed from the linked room analysis and reserved furniture; it may differ from the customer's earlier preview.</p>
     <p class="small"><span data-placement-status>Preparing local preview</span> <span data-placement-dimensions></span></p>
     <div class="room-preview-frame" data-room-preview data-preview-v2-enabled="false" data-consented="false" data-placement-status="fallback"
+        data-visual-scale-policy='@json(config("roompreview.visual_scale"))'
         data-product-id="{{ $product->id }}" data-product-name="{{ $product->name }}" data-product-type="{{ $product->recommendationType() }}" data-product-category="{{ $product->category }}"
         data-product-width="{{ $product->width_cm }}" data-product-depth="{{ $product->depth_cm }}" data-product-height="{{ $product->height_cm }}"
         data-initial-x="{{ data_get($placement,'x_percent',50) }}" data-initial-y="{{ data_get($placement,'y_percent',86) }}" data-initial-width="{{ data_get($placement,'max_width_percent',65) }}"

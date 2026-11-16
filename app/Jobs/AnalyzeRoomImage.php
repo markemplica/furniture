@@ -33,7 +33,7 @@ class AnalyzeRoomImage implements ShouldQueue
 
     public int $timeout = 240;
 
-    public function __construct(public int $roomImageId, public ?string $furnitureType = null)
+    public function __construct(public int $roomImageId, public ?string $furnitureType = null, public bool $forceAnalysis = false)
     {
         $this->onQueue('ai');
         $this->deadlineAt = now()->addMinutes(10)->timestamp;
@@ -104,7 +104,7 @@ class AnalyzeRoomImage implements ShouldQueue
             return;
         }
 
-        $version = (string) config('roompreview.pipeline_version', 'v2').(\App\Services\AiProvider::name() === 'groq' ? '-groq-v1' : '');
+        $version = (string) config('roompreview.pipeline_version', 'v2');
         $sharedGeometry = filled($room->image_sha256) && $this->furnitureType === 'all catalog furniture';
         $lock = $sharedGeometry ? Cache::lock('room-analysis:'.$room->image_sha256.':'.$version, 240) : null;
         if ($lock && ! $lock->get()) {
@@ -117,7 +117,7 @@ class AnalyzeRoomImage implements ShouldQueue
         try {
             $cached = $sharedGeometry ? RoomPreviewAnalysis::where('image_sha256', $room->image_sha256)
                 ->where('pipeline_version', $version)->where('status', 'completed')->first() : null;
-            if ($cached && $cached->analyzed_at && $cached->analyzed_at->gte($room->analysis_requested_at ?? $room->created_at)
+            if ($cached && $cached->analyzed_at && (! $this->forceAnalysis || $cached->analyzed_at->gte($room->analysis_requested_at ?? $room->created_at))
                 && is_array($cached->analysis) && ($cached->analysis['gemini_used'] ?? false)
                 && data_get($cached->analysis, 'vision_geometry.image_quality.usable') !== false) {
                 $this->complete($room, $cached->analysis, 'completed');
@@ -250,7 +250,7 @@ class AnalyzeRoomImage implements ShouldQueue
                 $geometry = $analysis;
                 unset($geometry['generated_previews'], $geometry['generated_preview_attempts']);
                 RoomPreviewAnalysis::updateOrCreate(
-                    ['image_sha256' => $current->image_sha256, 'pipeline_version' => (string) config('roompreview.pipeline_version', 'v2').(\App\Services\AiProvider::name() === 'groq' ? '-groq-v1' : '')],
+                    ['image_sha256' => $current->image_sha256, 'pipeline_version' => (string) config('roompreview.pipeline_version', 'v2')],
                     ['status' => 'completed', 'analysis' => $geometry, 'failure_code' => null, 'analyzed_at' => now()],
                 );
             }

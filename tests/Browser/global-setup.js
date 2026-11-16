@@ -37,7 +37,7 @@ $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 if ($path !== '/' && is_file('${publicRoot}'.$path)) return false;
 require '${publicRoot}/index.php';
 `);
-    const server = spawn('php', ['-S', '127.0.0.1:8001', '-t', 'public', router], {
+    const server = spawn('php', ['-d', `upload_tmp_dir=${directory}`, '-S', '127.0.0.1:8001', '-t', 'public', router], {
         env: environment, stdio: 'ignore', windowsHide: true,
     });
     let ready = false;

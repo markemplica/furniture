@@ -11,6 +11,9 @@ FURNICRAFT | LANCE FURNITURE SHOP
 @foreach($details as $detail)
 {{ $detail['label'] }}: {{ $detail['value'] }}
 @endforeach
+@if(!empty($bodyText))
+{{ $bodyText }}
+@endif
 @if($buttonUrl && $buttonLabel)
 {{ $buttonLabel }}: {{ $buttonUrl }}
 @endif

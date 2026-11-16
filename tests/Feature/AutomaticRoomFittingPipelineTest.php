@@ -40,7 +40,7 @@ class AutomaticRoomFittingPipelineTest extends TestCase
         $photos->shouldReceive('deleteGenerated')->andReturnUsing(fn ($path) => Storage::disk('local')->delete($path));
         $gemini = $this->mock(GeminiService::class);
         $gemini->shouldReceive('providerCallCount')->andReturn(0);
-        $gemini->shouldReceive('limitProviderRequests', 'clearProviderRequestLimit')->andReturnNull();
+        $gemini->shouldReceive('limitProviderRequests', 'clearProviderRequestLimit')->byDefault()->andReturnNull();
         $gemini->shouldReceive('isConfigured')->andReturnTrue();
         $gemini->shouldReceive('roomFallback')->andReturn(['gemini_used' => false]);
         $raster = $this->mock(RoomPreviewRasterService::class);
@@ -71,6 +71,20 @@ class AutomaticRoomFittingPipelineTest extends TestCase
         $this->assertSame('completed', $generation->fresh()->status);
         $this->assertSame('ai-image', Storage::disk('local')->get($generation->fresh()->placement_json['artifact_path']));
         $this->assertSame('completed', $room->fresh()->analysis_status);
+    }
+
+    public function test_rejected_enhancement_never_generates_again_even_when_configuration_requests_more_attempts(): void
+    {
+        [, $generation, $gemini, $raster] = $this->pipeline();
+        config(['roompreview.max_generation_attempts'=>99,'roompreview.max_provider_calls'=>99]);
+        $gemini->shouldReceive('limitProviderRequests')->once()->with(2)->andReturnNull();
+        $gemini->shouldNotReceive('analyzeRoom');
+        $gemini->shouldReceive('furnishRoom')->once()->andReturn(['bytes'=>'ai-image','mime_type'=>'image/png']);
+        $gemini->shouldReceive('verifyGeneratedRoom')->once()->andReturn(['passed'=>false]);
+        $raster->shouldReceive('pixelGuard')->once()->andReturn(['supported'=>true,'passed'=>false]);
+        app(RoomPreviewV2Service::class)->process($generation->id);
+        $this->assertSame('fallback',$generation->fresh()->status);
+        $this->assertSame('local-image',Storage::disk('local')->get($generation->fresh()->placement_json['artifact_path']));
     }
 
     public function test_blocked_placement_never_generates_or_composites_furniture(): void
@@ -116,18 +130,18 @@ class AutomaticRoomFittingPipelineTest extends TestCase
         }
     }
 
-    public function test_failed_analysis_has_a_cooldown_instead_of_repeating_calls_on_retry(): void
+    public function test_preview_retries_never_purchase_another_room_analysis(): void
     {
         [$room, $generation, $gemini] = $this->pipeline();
         $room->update(['analysis_status' => 'fallback', 'analysis' => ['gemini_used' => false]]);
-        $gemini->shouldReceive('analyzeRoom')->once()->andThrow(new RequestException(new Response(new \GuzzleHttp\Psr7\Response(429))));
+        $gemini->shouldNotReceive('analyzeRoom');
         $gemini->shouldNotReceive('furnishRoom');
         $service = app(RoomPreviewV2Service::class);
         $service->process($generation->id);
         $generation->refresh()->update(['status' => 'queued', 'metrics_json' => null]);
         $service->process($generation->id);
-        $this->assertSame('ai_request_limit_reached', $generation->fresh()->failure_code);
-        $this->assertSame(1, RoomPreviewAnalysis::firstOrFail()->attempts);
+        $this->assertSame('analysis_unavailable', $generation->fresh()->failure_code);
+        $this->assertDatabaseCount('room_preview_analyses', 0);
     }
 
     public function test_cancelled_worker_cannot_recreate_an_artifact_after_consent_revocation(): void

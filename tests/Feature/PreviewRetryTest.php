@@ -10,6 +10,15 @@ use Tests\TestCase;
 
 class PreviewRetryTest extends TestCase
 {
+    public function test_recent_paid_preview_cannot_be_repeated_and_spending_metrics_are_preserved(): void
+    {
+        [$room,$product,$generation]=$this->preview();
+        $generation->update(['completed_at'=>now(),'metrics_json'=>['provider_calls'=>2]]);
+        $this->postJson(route('room.preview-v2.store',$room),['furniture_id'=>$product->id,'retry'=>true])->assertStatus(429);
+        Bus::assertNotDispatched(GenerateRoomPreviewV2::class);
+        $this->assertSame(2,$generation->fresh()->metrics_json['provider_calls']);
+    }
+
     use RefreshDatabase;
 
     private function preview(string $status = 'fallback', bool $consented = true): array

@@ -1,0 +1,16 @@
+{
+    "policy": {
+        "height": 0.52,
+        "height_without_floor": 0.38,
+        "width_without_floor": 0.40,
+        "widths": {"bed": 0.40, "living": 0.55, "dining": 0.50, "storage": 0.32, "seating": 0.25, "table": 0.35, "default": 0.40}
+    },
+    "cases": [
+        {"type":"Bed Frame", "aspect":0.8, "frame":1.5, "floor":true, "requested":0.58, "expected":0.2773333333333333},
+        {"type":"Bed Frame", "aspect":0.8, "frame":1.5, "floor":false, "requested":0.58, "expected":0.2026666666666667},
+        {"type":"Sala Set", "aspect":1.4, "frame":1.5, "floor":true, "requested":0.42, "expected":0.42},
+        {"type":"Chair", "aspect":1, "frame":1.5, "floor":true, "requested":0.12, "expected":0.12},
+        {"type":"Console", "aspect":4, "frame":1.5, "floor":true, "requested":0.60, "expected":0.35},
+        {"type":"Dining Set", "aspect":2, "frame":0.5, "floor":true, "requested":0.80, "expected":0.50}
+    ]
+}

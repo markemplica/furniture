@@ -76,6 +76,13 @@ class RoomPreviewRasterService
         }
         $opening = ($placement['surface'] ?? null) === 'opening'
             || (filled($product->category) && str_contains(strtolower($product->recommendationType()), 'door'));
+        if (! $opening && ($placement['surface'] ?? 'floor') !== 'wall') {
+            $placement['max_width_percent'] = 100 * app(RoomPreviewScaleService::class)->limitWidth(
+                (float) ($placement['max_width_percent'] ?? 35) / 100,
+                $product->recommendationType(), imagesx($item) / imagesy($item), $canvasWidth / $canvasHeight,
+                (bool) ($placement['floor_detected'] ?? (($placement['source'] ?? '') !== 'type-fallback')),
+            );
+        }
         $quad = $opening
             ? $this->openingQuad($placement['quad_percent'] ?? null, $canvasWidth, $canvasHeight)
             : $this->furnitureQuad($placement, imagesx($item), imagesy($item), $canvasWidth, $canvasHeight);
@@ -90,22 +97,12 @@ class RoomPreviewRasterService
         $bottom = min($canvasHeight, (int) ceil(max(array_column($quad, 1))));
         $guardBounds = [$left, $top, $right, $bottom];
         imagealphablending($room, true);
-        // Doors fill detected openings; a floor shadow would invent another object below the frame.
-        if (! $opening) {
-            $shadowWidth = max(1, (int) (($right - $left) * 0.82));
-            $shadowHeight = max(3, (int) (($right - $left) * 0.09));
-            $shadowX = (int) round(($quad[2][0] + $quad[3][0]) / 2);
-            $shadowY = (int) round(($quad[2][1] + $quad[3][1]) / 2);
-            $shadow = imagecolorallocatealpha($room, 20, 16, 12, 88);
-            imagefilledellipse($room, $shadowX, $shadowY, $shadowWidth, $shadowHeight, $shadow);
-            $guardBounds = [
-                max(0, min($left, $shadowX - (int) ceil($shadowWidth / 2))),
-                max(0, min($top, $shadowY - (int) ceil($shadowHeight / 2))),
-                min($canvasWidth, max($right, $shadowX + (int) ceil($shadowWidth / 2) + 1)),
-                min($canvasHeight, max($bottom, $shadowY + (int) ceil($shadowHeight / 2) + 1)),
-            ];
-        }
         $flip = ($placement['flip'] ?? 1) === -1 || ($placement['flip'] ?? false) === true;
+        app(RoomPreviewLightingService::class)->apply($item, $room, $flip);
+        // Doors fill detected openings; a floor shadow would invent another object below the frame.
+        if (! $opening && ($placement['surface'] ?? 'floor') !== 'wall') {
+            $guardBounds = $this->contactShadows($room, $item, $quad, $flip, $guardBounds);
+        }
         $this->drawProjectedImage($room, $item, $quad, $flip);
         ob_start();
         imagepng($room);
@@ -113,6 +110,57 @@ class RoomPreviewRasterService
         imagedestroy($item);
         imagedestroy($room);
         return ['bytes' => $bytes, 'mime' => 'image/png', 'bounds' => [$left, $top, $right, $bottom], 'guard_bounds' => $guardBounds];
+    }
+
+    private function contactShadows(\GdImage $room, \GdImage $item, array $quad, bool $flip, array $guard): array
+    {
+        $sample = imagecreatetruecolor(160, 160);
+        imagealphablending($sample, false); imagesavealpha($sample, true);
+        imagecopyresampled($sample, $item, 0, 0, 0, 0, 160, 160, imagesx($item), imagesy($item));
+        $profile = array_fill(0, 160, null);
+        for ($x = 0; $x < 160; $x++) {
+            for ($y = 159; $y >= 58; $y--) {
+                if (((imagecolorat($sample, $x, $y) >> 24) & 127) <= 47
+                    && ((imagecolorat($sample, $x, $y - 1) >> 24) & 127) <= 47
+                    && ((imagecolorat($sample, $x, $y - 2) >> 24) & 127) <= 47) {
+                    $profile[$x] = $y; break;
+                }
+            }
+        }
+        imagedestroy($sample);
+        $contacts = [];
+        for ($x = 0; $x < 160;) {
+            if ($profile[$x] === null) { $x++; continue; }
+            $start = $x; $low = $high = $profile[$x];
+            while ($x + 1 < 160 && $profile[$x + 1] !== null && max($high, $profile[$x + 1]) - min($low, $profile[$x + 1]) <= 2) {
+                $x++; $low = min($low, $profile[$x]); $high = max($high, $profile[$x]);
+            }
+            $end = $x++;
+            if ($end - $start < 1) continue;
+            $recessed = false;
+            for ($i = max(0, $start - 6); $i <= min(159, $end + 6); $i++) {
+                if ($profile[$i] !== null && $profile[$i] > $high + 3) { $recessed = true; break; }
+            }
+            if (! $recessed) $contacts[] = ['x' => ($start + $end + 1) / 320, 'y' => ($high + 1) / 160, 'width' => ($end - $start + 1) / 160];
+        }
+        usort($contacts, fn ($a, $b) => $b['y'] <=> $a['y']);
+        $itemWidth = hypot($quad[1][0] - $quad[0][0], $quad[1][1] - $quad[0][1]);
+        foreach (array_slice($contacts, 0, 24) as $contact) {
+            $u = $flip ? 1 - $contact['x'] : $contact['x']; $v = $contact['y'];
+            [$cx, $cy] = $this->projectQuad($quad, $u, $v);
+            $rx = max(2, min($itemWidth * .08, $contact['width'] * $itemWidth * .9 + 1));
+            $ry = max(1.2, $rx * .24); $cy += $ry * .15;
+            $left = max(0, (int) floor($cx - $rx)); $right = min(imagesx($room) - 1, (int) ceil($cx + $rx));
+            $top = max(0, (int) floor($cy - $ry)); $bottom = min(imagesy($room) - 1, (int) ceil($cy + $ry));
+            for ($y = $top; $y <= $bottom; $y++) for ($x = $left; $x <= $right; $x++) {
+                $distance = hypot(($x - $cx) / $rx, ($y - $cy) / $ry);
+                if ($distance >= 1) continue;
+                $opacity = $distance < .35 ? .32 - .14 * $distance / .35 : .18 * (1 - $distance) / .65;
+                imagesetpixel($room, $x, $y, imagecolorallocatealpha($room, 25, 20, 16, (int) round(127 * (1 - $opacity))));
+            }
+            $guard = [min($guard[0], $left), min($guard[1], $top), max($guard[2], $right + 1), max($guard[3], $bottom + 1)];
+        }
+        return $guard;
     }
 
     /** Only alpha-transparent padding is removed; opaque backgrounds and product colours are retained. */
@@ -162,17 +210,19 @@ class RoomPreviewRasterService
         $scale = min($targetWidth / $itemWidth, $width * .9 / $itemWidth, $height * .92 / $itemHeight);
         $w = $itemWidth * $scale; $h = $itemHeight * $scale;
         $rotation = deg2rad(max(-18, min(18, (float) ($placement['rotation_deg'] ?? 0))));
-        $shear = tan(deg2rad(max(-24, min(24, (float) ($placement['perspective_deg'] ?? 0))))) * .35;
-        if (abs($rotation) < 1e-9 && abs($shear) < 1e-9) {
+        $turn = sin(deg2rad(max(-24, min(24, (float) ($placement['perspective_deg'] ?? 0))))) * .18;
+        if (abs($rotation) < 1e-9 && abs($turn) < 1e-9) {
             // Snap the unwarped rectangle as a unit; rounding each edge separately distorts tall cutouts.
-            $w = max(1, (int) round($w)); $h = max(1, (int) round($h));
+            $aspect = $h / $w;
+            $w = max(1, (int) floor($w)); $h = max(1, (int) round($w * $aspect));
             $left = (int) round(max(0, min($width - $w, $width * max(.05, min(.95, (float) ($placement['x_percent'] ?? 50) / 100)) - $w / 2)));
             $top = (int) round(max(0, min($height - $h, $height * max(.05, min(.98, (float) ($placement['y_percent'] ?? 86) / 100)) - $h)));
             return [[$left, $top], [$left + $w, $top], [$left + $w, $top + $h], [$left, $top + $h]];
         }
         $offsets = [];
         foreach ([[-$w / 2, -$h], [$w / 2, -$h], [$w / 2, 0], [-$w / 2, 0]] as [$x, $y]) {
-            $x += $shear * $y;
+            $depth = 1 + $turn * (2 * $x / $w);
+            $x /= $depth; $y /= $depth;
             $offsets[] = [$x * cos($rotation) - $y * sin($rotation), $x * sin($rotation) + $y * cos($rotation)];
         }
         $minX = min(array_column($offsets, 0)); $maxX = max(array_column($offsets, 0));
@@ -181,6 +231,20 @@ class RoomPreviewRasterService
         $centerX = max(-$minX * $fit, min($width - $maxX * $fit, $width * max(.05, min(.95, (float) ($placement['x_percent'] ?? 50) / 100))));
         $bottomY = max(-$minY * $fit, min($height - $maxY * $fit, $height * max(.05, min(.98, (float) ($placement['y_percent'] ?? 86) / 100))));
         return array_map(fn ($point) => [$centerX + $point[0] * $fit, $bottomY + $point[1] * $fit], $offsets);
+    }
+
+    /** Project source contact points with the same homography used by the image warp. */
+    private function projectQuad(array $quad, float $u, float $v): array
+    {
+        [[$x0, $y0], [$x1, $y1], [$x2, $y2], [$x3, $y3]] = $quad;
+        $dx1 = $x1 - $x2; $dx2 = $x3 - $x2; $dx3 = $x0 - $x1 + $x2 - $x3;
+        $dy1 = $y1 - $y2; $dy2 = $y3 - $y2; $dy3 = $y0 - $y1 + $y2 - $y3;
+        $den = $dx1 * $dy2 - $dx2 * $dy1;
+        $g = abs($den) < 1e-9 ? 0 : ($dx3 * $dy2 - $dx2 * $dy3) / $den;
+        $h = abs($den) < 1e-9 ? 0 : ($dx1 * $dy3 - $dx3 * $dy1) / $den;
+        $den = $g * $u + $h * $v + 1;
+        return [(($x1 - $x0 + $g * $x1) * $u + ($x3 - $x0 + $h * $x3) * $v + $x0) / $den,
+            (($y1 - $y0 + $g * $y1) * $u + ($y3 - $y0 + $h * $y3) * $v + $y0) / $den];
     }
 
     /** Inverse homography maps destination pixels to the original image, avoiding gaps between triangles. */

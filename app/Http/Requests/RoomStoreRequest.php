@@ -20,7 +20,6 @@ class RoomStoreRequest extends FormRequest
             'return_to' => ['nullable', 'in:recommendations'],
             'gemini_consent' => ['nullable', 'boolean'],
             'ai_consent_provider' => [
-                \Illuminate\Validation\Rule::requiredIf(fn () => \App\Services\AiProvider::name() === 'groq' && $this->boolean('gemini_consent')),
                 \Illuminate\Validation\Rule::in([\App\Services\AiProvider::name()]),
             ],
         ];

@@ -30,6 +30,16 @@ class ApiSpendingProtectionTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_optional_chat_cannot_enable_transport_retries_or_model_fallback(): void
+    {
+        $client=$this->provider();
+        config(['services.gemini.chat_model'=>'primary','services.gemini.fallback_model'=>'secondary']);
+        Http::fakeSequence()->push([],503)->push($this->success(),200);
+        $answer=$client->generate('Fake question','Local answer','chat_response',retryAttempts:99,modelLimit:99);
+        $this->assertFalse($answer['used']);
+        Http::assertSentCount(1);
+    }
+
     private function provider(): GeminiClient
     {
         config(['services.gemini.key' => 'test-only-key', 'services.gemini.model' => 'primary', 'services.gemini.fallback_model' => null]);

@@ -14,7 +14,6 @@ abstract class TestCase extends BaseTestCase
         // Tests must opt into AI with dummy credentials and mocked responses.
         config([
             'services.ai.provider' => 'gemini',
-            'services.groq.key' => null,
             'services.gemini.key' => null,
             // Generous fake-only budgets: tests must still opt in with a dummy key and Http::fake.
             'services.gemini.enabled' => true,

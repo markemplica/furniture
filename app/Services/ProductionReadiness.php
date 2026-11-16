@@ -72,7 +72,7 @@ class ProductionReadiness
         $policyReady = ! config('services.gemini.enabled') || (
             (int) config('services.gemini.daily_request_limit') > 0 && (int) config('services.gemini.monthly_request_limit') > 0
             && (int) config('services.gemini.daily_budget_micro_usd') > 0 && (int) config('services.gemini.monthly_budget_micro_usd') > 0
-            && in_array(AiProvider::name(), ['gemini', 'groq'], true)
+            && AiProvider::name() === 'gemini'
             && array_diff($models, config('services.'.AiProvider::name().'.allowed_text_models', [])) === []
             && (! config('services.gemini.image_enabled') || in_array(config('services.gemini.image_model'), config('services.gemini.allowed_image_models', []), true))
         );

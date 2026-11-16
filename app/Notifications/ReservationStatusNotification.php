@@ -25,7 +25,6 @@ class ReservationStatusNotification extends Notification implements ShouldQueue
     public static function subjectFor(string $status): string
     {
         return match ($status) {
-            'pending' => 'Reservation request received',
             'ready' => 'Reservation item marked ready by the shop',
             'completed' => 'Reservation visit recorded as completed',
             'cancelled' => 'Reservation request cancelled',
@@ -44,7 +43,6 @@ class ReservationStatusNotification extends Notification implements ShouldQueue
     public function toMail(object $notifiable): MailMessage
     {
         [$heading, $intro, $note] = match ($this->status) {
-            'pending' => ['Request received', 'Lance Furniture Shop received your reservation request.', 'The shop will review your request. No payment has been collected and physical availability is not yet confirmed.'],
             'ready' => ['Shop marked your item ready', 'Lance Furniture Shop marked the item on your approved request as ready.', 'Contact the shop before visiting to confirm physical availability and operating hours. No payment has been collected through FurniCraft.'],
             'completed' => ['Visit completed', 'The shop recorded your reservation visit as completed or claimed.', 'Contact Lance Furniture Shop if this record does not match your visit.'],
             'cancelled' => ['Request cancelled', 'Your reservation request has been cancelled.', 'You can contact Lance Furniture Shop if you have questions about this cancellation.'],
